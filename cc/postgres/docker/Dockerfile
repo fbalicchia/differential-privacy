@@ -45,27 +45,13 @@ RUN git clone https://github.com/google/differential-privacy.git -b master --sin
 #RUN cd /tmp/differential-privacy/cc;bazel build postgres/anon_func.so
 
 
-FROM postgres:11
+FROM spilo:local
 
-RUN apt-get update \
-    && apt-get install -f -y --no-install-recommends \
-        software-properties-common \
-    && add-apt-repository "deb http://ftp.debian.org/debian testing main contrib" \
-    && apt-get update && apt-get install -f -y --no-install-recommends \
-        libprotobuf-c1 \
-    && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /tmp/differential-privacy/cc/bazel-bin/postgres/anon_func.so  /usr/lib/postgresql/$PG_MAJOR/lib/
-COPY --from=build /tmp/differential-privacy/cc/postgres/anon_func.control /usr/share/postgresql/$PG_MAJOR/extension/
-COPY --from=build /tmp/differential-privacy/cc/postgres/anon_func--1.0.0.sql /usr/share/postgresql/$PG_MAJOR/extension/
+COPY --from=build /tmp/differential-privacy/cc/bazel-bin/postgres/anon_func.so  /usr/lib/postgresql/11/lib/
+COPY --from=build /tmp/differential-privacy/cc/postgres/anon_func.control /usr/share/postgresql/11/extension/
+COPY --from=build /tmp/differential-privacy/cc/postgres/anon_func--1.0.0.sql /usr/share/postgresql/11/extension/
 
 #Copy Dataset sample 
-COPY --from=build /tmp/differential-privacy/cc/postgres/fruiteaten.csv  /
-COPY --from=build /tmp/differential-privacy/cc/postgres/shirts.csv  /
-
-# Copy the custom configuration which will be passed down to the server (using a .sample file is the preferred way of doing it by
-# the base Docker image)
-COPY postgresql.conf.sample /usr/share/postgresql/postgresql.conf.sample
-
-# Copy the script which will initialize the replication permissions
-COPY /docker-entrypoint-initdb.d /docker-entrypoint-initdb.d
+COPY --from=build /tmp/differential-privacy/cc/postgres/fruiteaten.csv  /home/postgres/
+COPY --from=build /tmp/differential-privacy/cc/postgres/shirts.csv  /home/postgres/
