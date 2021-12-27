@@ -23,7 +23,7 @@ package differential_privacy;
 import "google/protobuf/any.proto";
 import "proto/data.proto";
 
-option java_package = "com.google.differentialprivacy";
+option java_package = "com.google.privacy.differentialprivacy.proto";
 
 // Serialized summary data of a subset of the input data, to be merged at a
 // later time.
@@ -35,6 +35,30 @@ message Summary {
 message CountSummary {
   // Count of the data subset.
   optional int64 count = 1;
+
+  // TODO: Use below fields in C++ library.
+  // Count parameters:
+  optional double epsilon = 3;
+  optional double delta = 4;
+  optional MechanismType mechanism_type = 5;
+  optional int32 max_partitions_contributed = 6;
+  optional int32 max_contributions_per_partition = 7;
+}
+
+message BoundedQuantilesSummary {
+  // Distribution of the data subset, stored in the form of a quantile tree
+  map<int32, int64> quantile_tree = 1;
+
+  // Quantiles parameters:
+  optional double epsilon = 2;
+  optional double delta = 3;
+  optional MechanismType mechanism_type = 4;
+  optional double lower = 5;
+  optional double upper = 6;
+  optional int32 max_partitions_contributed = 7;
+  optional int32 max_contributions_per_partition = 8;
+  optional int32 tree_height = 9;
+  optional int32 branching_factor = 10;
 }
 
 message BoundedSumSummary {
@@ -82,6 +106,11 @@ message BoundedMeanSummary {
 
   // ApproxBounds data if available.
   optional ApproxBoundsSummary bounds_summary = 4;
+
+  // These two fields are only used by the Java library (not C++), similarly to
+  // pos_sum and count.
+  optional BoundedSumSummary sum_summary = 5;
+  optional CountSummary count_summary = 6;
 }
 
 // Used for BoundedVariance and BoundedStandardDeviation algorithms.
@@ -102,6 +131,12 @@ message BoundedVarianceSummary {
 
   // ApproxBounds data if available.
   optional ApproxBoundsSummary bounds_summary = 6;
+
+  // These three fields are only used by the Java library (not C++), similarly
+  // to pos_sum_of_squares, pos_sum and count.
+  optional BoundedSumSummary sum_of_squares_summary = 7;
+  optional BoundedSumSummary sum_summary = 8;
+  optional CountSummary count_summary = 9;
 }
 
 message Elements {

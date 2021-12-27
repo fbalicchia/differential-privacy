@@ -25,7 +25,7 @@ Navigate to `examples/java` folder, build the codelab code and run it with the
 
 ```shell
 $ cd examples/java
-$ bazel build...
+$ bazel build ...
 $ bazel-bin/Main COUNT_VISITS_PER_HOUR
 ```
 
@@ -104,7 +104,7 @@ Build the codelab code and run it with the `COUNT_VISITS_PER_DAY` argument.
 
 ```shell
 $ cd examples/java
-$ bazel build...
+$ bazel build ...
 $ bazel-bin/Main COUNT_VISITS_PER_DAY
 ```
 
@@ -134,17 +134,25 @@ uses `Count` to calculate the differentially private count of visits for a
 single day.
 
 ```java
-// An estimate of how many times on average a visitor may enter the restaurant per week.
-private static final int MAX_VISITS_PER_WEEK = 3;
+// An upper bound for the number of days a singe visitor may contribute to is
+// set to 3. All exceeding visits will be discarded.
+//
+// Higher values result into less visits being dropped (and therefore less
+// bias) at the cost of higher noise. A good value should estimate an upper
+// bound for a typical user. Getting this right helps adding optimal amount of
+// noise without losing too much data.
+private static final int MAX_CONTRIBUTED_DAYS = 3;
+
 // Default epsilon.
 private static final double LN_3 = Math.log(3);
 
 // Construct DP Count.
 Count dpCount = Count.builder()
   .epsilon(LN_3)
-  // Each visitor may enter the restaurant up to MAX_VISITS_PER_WEEK times per week.
-  // Hence, each visitor may contribute up to MAX_VISITS_PER_WEEK daily counts.
-  .maxPartitionsContributed(MAX_VISITS_PER_WEEK)
+  // Each visitor may enter the restaurant on up to MAX_CONTRIBUTED_DAYS days
+  // per week. Hence, each visitor may contribute up to MAX_CONTRIBUTED_DAYS
+  // daily counts.
+  .maxPartitionsContributed(MAX_CONTRIBUTED_DAYS)
   .build();
 // Run DP Count to calculate a differentially private result.
 dpCount.incrementBy(boundedVisits.getVisitsForDay(day).size());
@@ -182,7 +190,7 @@ Build the codelab code and run it with the `SUM_REVENUE_PER_DAY` argument.
 
 ```shell
 $ cd examples/java
-$ bazel build...
+$ bazel build ...
 $ bazel-bin/Main SUM_REVENUE_PER_DAY
 ```
 
@@ -203,8 +211,9 @@ The code below uses `BoundedSum` to calculate the differentially private sums of
 the visitors' spendings for a single day.
 
 ```java
-  // Number of weekly visits for a visitor is limited to 4. All exceeding visits will be discarded.
-  private static final int MAX_VISITS_PER_WEEK = 4;
+  // Number of days a visitor may contribute to is limited to 4. All exceeding
+  // visits will be discarded.
+  private static final int MAX_CONTRIBUTED_DAYS = 4;
   // Minimum amount of money we expect a visitor to spend on a single visit.
   private static final int MIN_EUROS_SPENT = 0;
   // Maximum amount of money we expect a visitor to spend on a single visit.
@@ -214,7 +223,7 @@ the visitors' spendings for a single day.
 
   BoundedSum dpSum = BoundedSum.builder()
     .epsilon(LN_3)
-    .maxPartitionsContributed(MAX_VISITS_PER_WEEK)
+    .maxPartitionsContributed(MAX_CONTRIBUTED_DAYS)
     // Set contribution bounds. BoundedSum will clamp input contributions.
     .lower(MIN_EUROS_SPENT)
     .upper(MAX_EUROS_SPENT)
@@ -247,3 +256,85 @@ the bounds. Thus, the closer the bounds are to zero, the less noise is added. On
 the other hand, setting the lower and upper bound close to zero may mean that
 the input values are clamped more aggressively, which can decrease utility as
 well.
+
+### Sum-up revenue per week day (multiple visits per day)
+The above examples were somewhat simplified: we assumed that a visitor
+contributes to each partition at most once. The good news is that the library
+also supports multiple contributions per partition and adjusts the algorithms
+accordingly.
+
+*Note*: the library does not have access to the privacy unit ids and
+hence ensuring the contribution bounds is the responsibility of the caller.
+
+For some aggregation  (e.g., `BoundedMean`) support for multiple contributions
+per partition  is as simple as configuring the `maxContributionsPerPartitions`
+parameter. However, if contributions have very different ranges, the library can
+add much more noise than necessary. For example, assume we calculate
+`BoundedSum` of visitors’ daily spendings. A visitor typically enters the
+restaurant twice a day and pays 10 euros for breakfast and 50 euros for dinner.
+The `lower` and `upper` bounds should be set to 10 and 50 while
+`maxContributionsPerPartitions` equals 2. If we let the library calculate the
+sensitivity of sum (i.e., how much a single visitor can impact the final
+result), this will result in sensitivity of 100 while the actual sensitivity is
+60 (the higher the sensitivity is - the more noise is added). In such a case, it
+makes sense to pre-aggregate all visits, and provide a single contribution with
+adjusted lower and upper bounds (in our example, sum-up 10 and 50 and set the
+upper bound to 60).
+
+Hence, for the algorithms where pre-aggregation is feasible (e.g., `BoundedSum`)
+`maxContributionsPerPartitions` cannot be configured and is assumed to be equal
+to 1. We ask the client to pre-aggregate the input coming from the same privacy
+unit, and pass it to the library as a single contribution. The example below
+demonstrates the pre-aggregation.
+
+Imagine, a visitor may enter the restaurant several times per day. Visit data
+for this example is stored in the week_data_N_visits_per_day.csv file. Build the
+codelab code and run it with the `SUM_REVENUE_PER_DAY_WITH_PREAGGREGATION`
+argument.
+
+```shell
+$ cd examples/java
+$ bazel build …
+$ bazel-bin/Main SUM_REVENUE_PER_DAY_WITH_PREAGGREGATION
+```
+
+This triggers the logic of `SumRevenuePerDayWithPreAggregation.java`. Its logic
+is very similar to `SumRevenuePerDay.java` from the previous example. The
+non-private and private results are printed to
+`non_private_sum_per_day_w_preaggregation.csv` and
+`private_sum_per_day_w_preaggregation.csv` correspondingly. The results are
+illustrated in the image below.
+
+![Daily sums with preaggregation](img/sum_per_day_w_preaggregation.png)
+
+The code-snippet below pre-aggregates visitor’s daily spendings before passing
+data to `BoundedSum`:
+
+```java
+// For each visitor, pre-aggregate their spending for the day.
+Map<String, Integer> visitorToDaySpending = new HashMap<>();
+for (Visit v : boundedVisits.getVisitsForDay(d)) {
+  String visitorId = v.visitorId();
+  if (visitorToDaySpending.containsKey(visitorId)) {
+    int newAmount = visitorToDaySpending.get(visitorId) + v.eurosSpent();
+    visitorToDaySpending.put(visitorId, newAmount);
+  } else {
+    visitorToDaySpending.put(visitorId, v.eurosSpent());
+  }
+}
+```
+
+We also set the `upper` bound of`BoundedSum` to 65 to reflect the approximate
+maximum cumulative amount a visitor may spend on breakfast, lunch, and dinner.
+
+```java
+private static final int MAX_EUROS_SPENT = 65;
+...
+BoundedSum dpSum =
+    BoundedSum.builder()
+        .epsilon(LN_3)
+        .maxPartitionsContributed(MAX_CONTRIBUTED_DAYS)
+        .lower(MIN_EUROS_SPENT)
+        .upper(MAX_EUROS_SPENT)
+        .build();
+```

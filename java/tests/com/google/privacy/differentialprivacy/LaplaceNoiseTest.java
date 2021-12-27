@@ -17,11 +17,12 @@
 package com.google.privacy.differentialprivacy;
 
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.differentialprivacy.SummaryOuterClass.MechanismType.LAPLACE;
+import static com.google.privacy.differentialprivacy.proto.SummaryOuterClass.MechanismType.LAPLACE;
 import static org.junit.Assert.assertThrows;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.math.Stats;
+import java.security.SecureRandom;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -31,47 +32,56 @@ public final class LaplaceNoiseTest {
   private static final LaplaceNoise NOISE = new LaplaceNoise();
   private static final int NUM_SAMPLES = 100000;
   private static final double LN_3 = Math.log(3);
-  private static final double DEFAULT_MEAN = 0.0;
+  private static final double DEFAULT_X = 0.0;
   private static final double DEFAULT_EPSILON = LN_3;
   private static final int DEFAULT_L_0_SENSITIVITY = 1;
   private static final double DEFAULT_L_INF_SENSITIVITY = 1.0;
 
-  // Statistical tests should be run 10,000 times before submitting a modified version, to make sure
-  // that they aren't flaky.
   @Test
   public void addNoise_hasAccurateStatisticalProperties() {
     ImmutableList.Builder<Double> samples = ImmutableList.builder();
     for (int i = 0; i < NUM_SAMPLES; i++) {
       samples.add(
           NOISE.addNoise(
-              DEFAULT_MEAN,
+              DEFAULT_X,
               DEFAULT_L_0_SENSITIVITY,
               DEFAULT_L_INF_SENSITIVITY,
               DEFAULT_EPSILON,
-              /* delta */ null));
+              /* delta= */ null));
     }
     Stats stats = Stats.of(samples.build());
 
-    assertThat(stats.mean()).isWithin(0.1).of(0.0);
-    assertThat(stats.populationVariance()).isWithin(0.5).of(2.0 / (LN_3 * LN_3));
+    double variance = 2.0 / (LN_3 * LN_3);
+    // The tolerance is chosen according to the 99.9995% quantile of the anticipated distributions
+    // of the sample mean and variance. Thus, the test falsely rejects with a probability of 10^-5.
+    double sampleMeanTolerance = 4.41717 * Math.sqrt(variance / NUM_SAMPLES);
+    double sampleVarianceTolerance = 4.41717 * Math.sqrt(5.0 * variance * variance / NUM_SAMPLES);
+    assertThat(stats.mean()).isWithin(sampleMeanTolerance).of(DEFAULT_X);
+    assertThat(stats.populationVariance()).isWithin(sampleVarianceTolerance).of(variance);
   }
 
   @Test
-  public void addNoise_differentMean_hasAccurateStatisticalProperties() {
+  public void addNoise_differentX_hasAccurateStatisticalProperties() {
     ImmutableList.Builder<Double> samples = ImmutableList.builder();
     for (int i = 0; i < NUM_SAMPLES; i++) {
       samples.add(
           NOISE.addNoise(
-              /* mean */ 42.0,
+              /* x= */ 42.0,
               DEFAULT_L_0_SENSITIVITY,
               DEFAULT_L_INF_SENSITIVITY,
               DEFAULT_EPSILON,
-              /* delta */ null));
+              /* delta= */ null));
     }
     Stats stats = Stats.of(samples.build());
 
-    assertThat(stats.mean()).isWithin(0.1).of(42.0);
-    assertThat(stats.populationVariance()).isWithin(0.5).of(2.0 / (LN_3 * LN_3));
+    double mean = 42.0;
+    double variance = 2.0 / (LN_3 * LN_3);
+    // The tolerance is chosen according to the 99.9995% quantile of the anticipated distributions
+    // of the sample mean and variance. Thus, the test falsely rejects with a probability of 10^-5.
+    double sampleMeanTolerance = 4.41717 * Math.sqrt(variance / NUM_SAMPLES);
+    double sampleVarianceTolerance = 4.41717 * Math.sqrt(5.0 * variance * variance / NUM_SAMPLES);
+    assertThat(stats.mean()).isWithin(sampleMeanTolerance).of(mean);
+    assertThat(stats.populationVariance()).isWithin(sampleVarianceTolerance).of(variance);
   }
 
   @Test
@@ -80,16 +90,21 @@ public final class LaplaceNoiseTest {
     for (int i = 0; i < NUM_SAMPLES; i++) {
       samples.add(
           NOISE.addNoise(
-              DEFAULT_MEAN,
+              DEFAULT_X,
               DEFAULT_L_0_SENSITIVITY,
-              /* lInfSensitivity */ 0.5,
+              /* lInfSensitivity= */ 0.5,
               DEFAULT_EPSILON,
-              /* delta */ null));
+              /* delta= */ null));
     }
     Stats stats = Stats.of(samples.build());
 
-    assertThat(stats.mean()).isWithin(0.1).of(0.0);
-    assertThat(stats.populationVariance()).isWithin(0.5).of(2.0 / (4.0 * LN_3 * LN_3));
+    double variance = 2.0 / (4.0 * LN_3 * LN_3);
+    // The tolerance is chosen according to the 99.9995% quantile of the anticipated distributions
+    // of the sample mean and variance. Thus, the test falsely rejects with a probability of 10^-5.
+    double sampleMeanTolerance = 4.41717 * Math.sqrt(variance / NUM_SAMPLES);
+    double sampleVarianceTolerance = 4.41717 * Math.sqrt(5.0 * variance * variance / NUM_SAMPLES);
+    assertThat(stats.mean()).isWithin(sampleMeanTolerance).of(DEFAULT_X);
+    assertThat(stats.populationVariance()).isWithin(sampleVarianceTolerance).of(variance);
   }
 
   @Test
@@ -98,34 +113,44 @@ public final class LaplaceNoiseTest {
     for (int i = 0; i < NUM_SAMPLES; i++) {
       samples.add(
           NOISE.addNoise(
-              DEFAULT_MEAN,
+              DEFAULT_X,
               DEFAULT_L_0_SENSITIVITY,
               DEFAULT_L_INF_SENSITIVITY,
-              /* epsilon */ 2 * LN_3,
-              /* delta */ null));
+              /* epsilon= */ 2 * LN_3,
+              /* delta= */ null));
     }
     Stats stats = Stats.of(samples.build());
 
-    assertThat(stats.mean()).isWithin(0.1).of(0.0);
-    assertThat(stats.populationVariance()).isWithin(0.5).of(2.0 / (16.0 * LN_3 * LN_3));
+    double variance = 2.0 / (4.0 * LN_3 * LN_3);
+    // The tolerance is chosen according to the 99.9995% quantile of the anticipated distributions
+    // of the sample mean and variance. Thus, the test falsely rejects with a probability of 10^-5.
+    double sampleMeanTolerance = 4.41717 * Math.sqrt(variance / NUM_SAMPLES);
+    double sampleVarianceTolerance = 4.41717 * Math.sqrt(5.0 * variance * variance / NUM_SAMPLES);
+    assertThat(stats.mean()).isWithin(sampleMeanTolerance).of(DEFAULT_X);
+    assertThat(stats.populationVariance()).isWithin(sampleVarianceTolerance).of(variance);
   }
 
   @Test
-  public void addNoise_integralMean_hasAccurateStatisticalProperties() {
+  public void addNoise_integralX_hasAccurateStatisticalProperties() {
     ImmutableList.Builder<Long> samples = ImmutableList.builder();
     for (int i = 0; i < NUM_SAMPLES; i++) {
       samples.add(
           NOISE.addNoise(
-              /* mean */ 0L,
+              /* x= */ 0L,
               DEFAULT_L_0_SENSITIVITY,
-              /* lInfSensitivity */ 1L,
+              /* lInfSensitivity= */ 1L,
               DEFAULT_EPSILON,
-              /* delta */ null));
+              /* delta= */ null));
     }
     Stats stats = Stats.of(samples.build());
 
-    assertThat(stats.mean()).isWithin(0.1).of(0.0);
-    assertThat(stats.populationVariance()).isWithin(0.5).of(2.0 / (LN_3 * LN_3));
+    double mean = 0.0;
+    double approxVariance = 1.75;
+    // The tolerance is chosen according to the 99.9995% quantile of the anticipated distributions
+    // of the sample mean and variance. Thus, the test falsely rejects with a probability of 10^-5.
+    double sampleMeanTolerance = 4.41717 * Math.sqrt(approxVariance / NUM_SAMPLES);
+    assertThat(stats.mean()).isWithin(sampleMeanTolerance).of(mean);
+    // Not testing for the variance because it is not clear what variance should be expected.
   }
 
   @Test
@@ -134,11 +159,11 @@ public final class LaplaceNoiseTest {
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN,
+                DEFAULT_X,
                 DEFAULT_L_0_SENSITIVITY,
                 DEFAULT_L_INF_SENSITIVITY,
-                /* epsilon */ 1.0 / (1L << 51),
-                /* delta */ null));
+                /* epsilon= */ 1.0 / (1L << 51),
+                /* delta= */ null));
   }
 
   @Test
@@ -147,11 +172,11 @@ public final class LaplaceNoiseTest {
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN,
+                DEFAULT_X,
                 DEFAULT_L_0_SENSITIVITY,
                 DEFAULT_L_INF_SENSITIVITY,
-                /* epsilon */ Double.POSITIVE_INFINITY,
-                /* delta */ null));
+                /* epsilon= */ Double.POSITIVE_INFINITY,
+                /* delta= */ null));
   }
 
   @Test
@@ -160,24 +185,24 @@ public final class LaplaceNoiseTest {
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN,
+                DEFAULT_X,
                 DEFAULT_L_0_SENSITIVITY,
                 DEFAULT_L_INF_SENSITIVITY,
-                /* epsilon */ Double.NaN,
-                /* delta */ null));
+                /* epsilon= */ Double.NaN,
+                /* delta= */ null));
   }
 
   @Test
-  public void addNoise_deltaNonnul_throwsEsception() {
+  public void addNoise_deltaNonnul_throwsException() {
     assertThrows(
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN,
+                DEFAULT_X,
                 DEFAULT_L_0_SENSITIVITY,
                 DEFAULT_L_INF_SENSITIVITY,
                 DEFAULT_EPSILON,
-                /* delta */ 0.0));
+                /* delta= */ 0.0));
   }
 
   @Test
@@ -186,11 +211,11 @@ public final class LaplaceNoiseTest {
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN,
+                DEFAULT_X,
                 DEFAULT_L_0_SENSITIVITY,
-                /* lInfSensitvity */ Double.MAX_VALUE,
+                /* lInfSensitivity= */ Double.MAX_VALUE,
                 DEFAULT_EPSILON,
-                /* delta */ null));
+                /* delta= */ null));
   }
 
   @Test
@@ -199,11 +224,11 @@ public final class LaplaceNoiseTest {
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN,
+                DEFAULT_X,
                 DEFAULT_L_0_SENSITIVITY,
-                /* lInfSensitvity */ Double.NaN,
-                /* epsilon */ 1,
-                /* delta */ null));
+                /* lInfSensitivity= */ Double.NaN,
+                /* epsilon= */ 1.0,
+                /* delta= */ null));
   }
 
   @Test
@@ -212,11 +237,11 @@ public final class LaplaceNoiseTest {
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN,
+                DEFAULT_X,
                 DEFAULT_L_0_SENSITIVITY,
-                /* lInfSensitivity */ -1.0,
+                /* lInfSensitivity= */ -1.0,
                 DEFAULT_EPSILON,
-                /* delta */ null));
+                /* delta= */ null));
   }
 
   @Test
@@ -225,11 +250,11 @@ public final class LaplaceNoiseTest {
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN,
+                DEFAULT_X,
                 DEFAULT_L_0_SENSITIVITY,
-                /* lInfSensitivity */ 0.0,
+                /* lInfSensitivity= */ 0.0,
                 DEFAULT_EPSILON,
-                /* delta */ null));
+                /* delta= */ null));
   }
 
   @Test
@@ -238,11 +263,11 @@ public final class LaplaceNoiseTest {
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN,
-                /* l0Sensitivity */ -1,
+                DEFAULT_X,
+                /* l0Sensitivity= */ -1,
                 DEFAULT_L_INF_SENSITIVITY,
                 DEFAULT_EPSILON,
-                /* delta */ null));
+                /* delta= */ null));
   }
 
   @Test
@@ -251,11 +276,11 @@ public final class LaplaceNoiseTest {
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN,
-                /* lInfSensitivity */ 0,
+                DEFAULT_X,
+                /* l0Sensitivity= */ 0,
                 DEFAULT_L_INF_SENSITIVITY,
                 DEFAULT_EPSILON,
-                /* delta */ null));
+                /* delta= */ null));
   }
 
   @Test
@@ -264,7 +289,7 @@ public final class LaplaceNoiseTest {
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN, /* l1Sensitivity */ -1.0, DEFAULT_EPSILON, /* delta */ null));
+                DEFAULT_X, /* l1Sensitivity= */ -1.0, DEFAULT_EPSILON, /* delta= */ null));
   }
 
   @Test
@@ -273,7 +298,7 @@ public final class LaplaceNoiseTest {
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN, /* l1Sensitivity */ 0.0, DEFAULT_EPSILON, /* delta */ null));
+                DEFAULT_X, /* l1Sensitivity= */ 0.0, DEFAULT_EPSILON, /* delta= */ null));
   }
 
   @Test
@@ -282,7 +307,82 @@ public final class LaplaceNoiseTest {
         IllegalArgumentException.class,
         () ->
             NOISE.addNoise(
-                DEFAULT_MEAN, /* l1Sensitivity */ Double.NaN, DEFAULT_EPSILON, /* delta */ null));
+                DEFAULT_X, /* l1Sensitivity= */ Double.NaN, DEFAULT_EPSILON, /* delta= */ null));
+  }
+
+  @Test
+  public void addNoise_returnsMultipleOfGranularity() {
+    SecureRandom random = new SecureRandom();
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+      // The rounding pricess should be independent of the value of x. Set x to a value between
+      // -1*10^6 and 10^6 at random should covere a broad range of congruence classes.
+      double x = random.nextDouble() * 2000000.0 - 1000000.0;
+
+      // The following choice of epsilon, l0 sensitivity and linf sensitivity should result in a
+      // granularity of 2^-10
+      double noisedX =
+          NOISE.addNoise(
+              x,
+              /* l0Sensitivity= */ 1,
+              /* lInfSensitivity= */ 1.0,
+              /* epsilon= */ 4.7e-10,
+              /* delta= */ null);
+      assertThat(Math.floor(noisedX * 1024.0)).isEqualTo(noisedX * 1024.0);
+
+      // The following choice of epsilon, l0 sensitivity and linf sensitivity should result in a
+      // granularity of 2^0
+      noisedX =
+          NOISE.addNoise(
+              x,
+              /* l0Sensitivity= */ 1,
+              /* lInfSensitivity= */ 1.0,
+              /* epsilon= */ 9.1e-13,
+              /* delta= */ null);
+      assertThat(Math.floor(noisedX)).isEqualTo(noisedX);
+
+      // The following choice of epsilon, l0 sensitivity and linf sensitivity should result in a
+      // granularity of 2^10
+      noisedX =
+          NOISE.addNoise(
+              x,
+              /* l0Sensitivity= */ 1,
+              /* lInfSensitivity= */ 1.0,
+              /* epsilon= */ 8.9e-16,
+              /* delta= */ null);
+      assertThat(Math.floor(noisedX / 1024.0)).isEqualTo(noisedX / 1024.0);
+    }
+  }
+
+  @Test
+  public void addNoise_integralX_returnsMultipleOfGranularity() {
+    SecureRandom random = new SecureRandom();
+    for (int i = 0; i < NUM_SAMPLES; i++) {
+      // The rounding pricess should be independent of the value of x. Set x to a value between
+      // -1*10^6 and 10^6 at random should covere a broad range of congruence classes.
+      long x = (long) random.nextInt(2000000) - 1000000;
+
+      // The following choice of epsilon, l0 sensitivity and linf sensitivity should result in a
+      // granularity of 2^1
+      long noisedX =
+          NOISE.addNoise(
+              x,
+              /* l0Sensitivity= */ 1,
+              /* lInfSensitivity= */ 1,
+              /* epsilon= */ 4.6e-13,
+              /* delta= */ null);
+      assertThat(noisedX % 2).isEqualTo(0);
+
+      // The following choice of epsilon, l0 sensitivity and linf sensitivity should result in a
+      // granularity of 2^10
+      noisedX =
+          NOISE.addNoise(
+              x,
+              /* l0Sensitivity= */ 1,
+              /* lInfSensitivity= */ 1,
+              /* epsilon= */ 8.9e-16,
+              /* delta= */ null);
+      assertThat(noisedX % 1024).isEqualTo(0);
+    }
   }
 
   @Test
@@ -294,8 +394,14 @@ public final class LaplaceNoiseTest {
     }
     Stats stats = Stats.of(samples.build());
 
-    assertThat(stats.mean()).isWithin(15000.0).of(1000000.0);
-    assertThat(stats.populationStandardDeviation()).isWithin(15000.0).of(999999.5);
+    double mean = 1000000.0;
+    double variance = 1E12;
+    // The tolerance is chosen according to the 99.9995% quantile of the anticipated distributions
+    // of the sample mean and variance. Thus, the test falsely rejects with a probability of 10^-5.
+    double sampleMeanTolerance = 4.41717 * Math.sqrt(variance / NUM_SAMPLES);
+    double sampleVarianceTolerance = 4.41717 * Math.sqrt(8E24 / NUM_SAMPLES);
+    assertThat(stats.mean()).isWithin(sampleMeanTolerance).of(mean);
+    assertThat(stats.populationVariance()).isWithin(sampleVarianceTolerance).of(variance);
   }
 
   @Test
@@ -307,8 +413,14 @@ public final class LaplaceNoiseTest {
     }
     Stats stats = Stats.of(samples.build());
 
-    assertThat(stats.mean()).isWithin(0.015).of(2.0);
-    assertThat(stats.populationStandardDeviation()).isWithin(0.055).of(Math.sqrt(2.0));
+    double mean = 2.0;
+    double variance = 2.0;
+    // The tolerance is chosen according to the 99.9995% quantile of the anticipated distributions
+    // of the sample mean and variance. Thus, the test falsely rejects with a probability of 10^-5.
+    double sampleMeanTolerance = 4.41717 * Math.sqrt(variance / NUM_SAMPLES);
+    double sampleVarianceTolerance = 4.41717 * Math.sqrt(34.0 / NUM_SAMPLES);
+    assertThat(stats.mean()).isWithin(sampleMeanTolerance).of(mean);
+    assertThat(stats.populationVariance()).isWithin(sampleVarianceTolerance).of(variance);
   }
 
   @Test

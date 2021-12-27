@@ -1,7 +1,3 @@
-
-
-<!-- This file is auto-generated. Do not edit. -->
-
 # Input and Output
 
 Our `Algorithm`s are templated by the input data type, and return output encoded
@@ -10,20 +6,21 @@ scalar data to/from `Output` protos.
 
 ## Input
 
-Algorithms should be templated on the input type. For example, we can find the
+Algorithms are templated on the input type. For example, we can find the
 mean of integer values by building the
-[`BoundedMean`](https://github.com/google/differential-privacy/blob/master/cc/algorithms/bounded-mean.h) algorithm like below.
-Note that the mean will always be double type despite the template type.
+[`BoundedMean`](https://github.com/google/differential-privacy/blob/main/cc/algorithms/bounded-mean.h)
+algorithm like below. Note that the template only affects the input type; the
+mean that we return will always be a double.
 
 ```
-util::StatusOr<std::unique_ptr<BoundedMean<int64>>> bounded_mean =
+base::StatusOr<std::unique_ptr<BoundedMean<int64_t>>> bounded_mean =
   BoundedMean<int64>::Builder.SetEpsilon(1)
                              .SetLower(-10)
                              .SetUpper(10)
                              .Build();
 ```
 
-## [`Output`](https://github.com/google/differential-privacy/blob/master/proto/data.proto)
+## [`Output`](https://github.com/google/differential-privacy/blob/main/proto/data.proto)
 
 The `Output` contains the algorithm results, and any available accuracy details.
 
@@ -44,10 +41,10 @@ message Output {
 ```
 
 *   The `elements` contain the differentially private results of the algorithm.
-    Each `ValueType` holds one value of the specified type. Note that
-    `float_value` is actually a double and `int_value` is actually a long.
+    Each `ValueType` holds one value of the type specified by the algorithm.
+    Note that `float_value` is a double and `int_value` is a long.
 *   The `error_report` contains additional accuracy details. It is only
-    populated for select algorithms. If populated, `noise_confidence_interval`
+    populated for some algorithms. If populated, `noise_confidence_interval`
     will return the 95% confidence interval of the noise added. The
     `bounding_report` is populated in the case that a
     [`bounded algorithm`](algorithms/bounded-algorithm.md) automatically
@@ -58,7 +55,8 @@ message Output {
 
 Converting to/from these types can be cumbersome, so we provide utility
 functions for the common cases. We outline some of these functions below. See
-the [utility function file](https://github.com/google/differential-privacy/blob/master/cc/proto/util.h) for the full list.
+the [utility function file](https://github.com/google/differential-privacy/blob/main/cc/proto/util.h)
+for the full list.
 
 ### GetValue&lt;T&gt;
 

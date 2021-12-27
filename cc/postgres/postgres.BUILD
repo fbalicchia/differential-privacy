@@ -15,7 +15,7 @@
 
 licenses(["notice"])  # Apache v2.0
 
-load("@rules_foreign_cc//tools/build_defs:configure.bzl", "configure_make")
+load("@rules_foreign_cc//foreign_cc:configure.bzl", "configure_make")
 
 package(
     default_visibility = ["//visibility:public"],
@@ -50,13 +50,17 @@ configure_make(
             "CFLAGS": "-fPIC",
         },
     }),
-    headers_only = True,
+    out_headers_only = True,
     lib_source = "@postgres//:all",
 )
 
 cc_library(
     name = "pg_headers",
     hdrs = glob(["**/*.h"]),
+    includes = [
+        "postgres/include/internal",
+        "postgres/include/server",
+    ],
     deps = [
         "postgres",
     ],

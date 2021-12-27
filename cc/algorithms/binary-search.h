@@ -17,9 +17,13 @@
 #ifndef DIFFERENTIAL_PRIVACY_ALGORITHMS_BINARY_SEARCH_H_
 #define DIFFERENTIAL_PRIVACY_ALGORITHMS_BINARY_SEARCH_H_
 
+#include <cmath>
+#include <cstdlib>
+
 #include "base/percentile.h"
 #include "google/protobuf/any.pb.h"
-#include "base/status.h"
+#include "absl/status/status.h"
+#include "base/statusor.h"
 #include "algorithms/algorithm.h"
 #include "algorithms/numerical-mechanisms.h"
 #include "proto/util.h"
@@ -81,12 +85,14 @@ template <typename T>
 class BinarySearch : public Algorithm<T> {
  public:
   void AddEntry(const T& t) override {
-    if (!std::isnan(t)) {
+    // REF:
+    // https://stackoverflow.com/questions/61646166/how-to-resolve-fpclassify-ambiguous-call-to-overloaded-function
+    if (!std::isnan(static_cast<double>(t))) {
       quantiles_->Add(t);
     }
   }
 
-  Summary Serialize() override {
+  Summary Serialize() const override {
     BinarySearchSummary bs_summary;
     quantiles_->SerializeToProto(bs_summary.mutable_input());
     Summary summary;
@@ -94,19 +100,19 @@ class BinarySearch : public Algorithm<T> {
     return summary;
   }
 
-  base::Status Merge(const Summary& summary) override {
+  absl::Status Merge(const Summary& summary) override {
     if (!summary.has_data()) {
-      return base::InvalidArgumentError(
+      return absl::InternalError(
           "Cannot merge summary with no binary search data.");
     }
     BinarySearchSummary bs_summary;
     if (!summary.data().UnpackTo(&bs_summary)) {
-      return base::InvalidArgumentError(
+      return absl::InternalError(
           "Binary search summary unable to be unpacked.");
     }
     quantiles_->MergeFromProto(bs_summary.input());
 
-    return base::OkStatus();
+    return absl::OkStatus();
   }
 
   int64_t MemoryUsed() override {
@@ -130,21 +136,20 @@ class BinarySearch : public Algorithm<T> {
         upper_(upper),
         lower_(lower),
         mechanism_(std::move(mechanism)),
-        quantiles_(std::move(input_sketch)) {}
+        quantiles_(std::move(input_sketch)) {
+    // TODO: Replace with Builder class & parameter validation
+    DCHECK_GE(quantile, 0);
+    DCHECK_LE(quantile, 1);
+  }
 
   void ResetState() override { quantiles_->Reset(); }
 
-  base::StatusOr<Output> GenerateResult(double privacy_budget,
-                                        double noise_interval_level) override {
-    DCHECK_GT(privacy_budget, 0.0)
-        << "Privacy budget should be greater than zero.";
-    if (privacy_budget == 0.0) return Output();
-    return BayesianSearch(privacy_budget, noise_interval_level);
+  base::StatusOr<Output> GenerateResult(double noise_interval_level) override {
+    return BayesianSearch(noise_interval_level);
   }
 
  private:
-  base::StatusOr<Output> BayesianSearch(double privacy_budget,
-                                        double noise_interval_level) {
+  base::StatusOr<Output> BayesianSearch(double noise_interval_level) {
     // If the bounds are equal, we return the only possible value with total
     // confidence.
     if (lower_ == upper_) {
@@ -158,9 +163,9 @@ class BinarySearch : public Algorithm<T> {
     }
 
     // Start the local_budget at a fraction of the total budget.
-    double local_budget = privacy_budget * kDefaultLocalBudgetFraction;
-    double remaining_budget = privacy_budget;
-    double max_local_budget = privacy_budget * kMaxLocalBudgetFraction;
+    double local_budget = kDefaultLocalBudgetFraction;
+    double remaining_budget = 1.0;
+    double max_local_budget = kMaxLocalBudgetFraction;
 
     // Stores probability that the target value is the subrange. Since the map
     // is sorted, it contains a sequence of key-value pairs (k_i, v_i) for
@@ -181,7 +186,7 @@ class BinarySearch : public Algorithm<T> {
 
       // Find noisy counts for number of values above and below m. A single
       // input only contributes to one of the two counts.
-      const double percentile = Percentile(m).ValueOrDie();
+      ASSIGN_OR_RETURN(const double percentile, Percentile(m));
       double noisy_less = mechanism_->AddNoise(
           percentile * quantiles_->num_values(), local_budget);
       double noisy_more = mechanism_->AddNoise(
@@ -210,19 +215,20 @@ class BinarySearch : public Algorithm<T> {
 
       // Find the subrange to split the bucket and its weight in two.
       double sum_w = 0.0;
-      std::map<double, double>::iterator it;
-      for (it = weight.begin(); it != weight.end(); it++) {
+      double lower_bound = static_cast<double>(lower_);
+      double w = 0;
+      auto it = weight.begin();
+      for (; it != weight.end(); it++) {
         sum_w += it->second;
+        lower_bound = it->first;
+        w = it->second;
         if (sum_w >= .5) {
           break;
         }
       }
-      double lower_bound = it->first;
-      double w = it->second;
-      double upper_bound = 0;
-      if (++it == weight.end()) {
-        upper_bound = static_cast<double>(upper_);
-      } else {
+
+      double upper_bound = static_cast<double>(upper_);
+      if (it != weight.end() && ++it != weight.end()) {
         upper_bound = it->first;
       }
 
@@ -241,7 +247,8 @@ class BinarySearch : public Algorithm<T> {
 
     // Round the result instead of truncation.
     if (std::is_integral<T>::value) {
-      m = std::round(m);
+      m = Clamp<double>(std::numeric_limits<T>::lowest(),
+                        std::numeric_limits<T>::max(), std::round(m));
     }
 
     // Return 95% confidence interval of the error.
@@ -268,45 +275,45 @@ class BinarySearch : public Algorithm<T> {
   // local privacy_budget, find the probability that the percentile p element of
   // the set is to the left of the investigated value. The tolerance is the
   // distance from removable singularities to use the value at singularity.
-  virtual double BayesianProbabilityLeft(double privacy_budget, double L,
+  virtual double BayesianProbabilityLeft(double local_budget, double L,
                                          double U) {
     double p = quantile_;
-    double b = privacy_budget / mechanism_->GetDiversity();
+    double b = local_budget / mechanism_->GetDiversity();
 
     // Removable singularity at p=1/2.
     if (std::abs(p - .5) < kSingularityTolerance) {
       if (L < U) {
-        return -.25 * exp(b * (L - U)) * (-2 + b * (L - U));
+        return -.25 * std::exp(b * (L - U)) * (-2 + b * (L - U));
       }
       // L >= U.
-      return 1 + exp(b * (U - L)) * (-.5 + .25 * b * (U - L));
+      return 1 + std::exp(b * (U - L)) * (-.5 + .25 * b * (U - L));
     }
 
     // Singularities at p = 0 and p = 1. We use a simplified method.
     if (std::abs(p) < kSingularityTolerance) {
       if (L <= 0) {
-        return exp(b * L) / 2;
+        return std::exp(b * L) / 2;
       } else {
-        return 1 - exp(-b * L) / 2;
+        return 1 - std::exp(-b * L) / 2;
       }
     }
     if (std::abs(p - 1) < kSingularityTolerance) {
       if (U <= 0) {
-        return 1 - exp(b * U) / 2;
+        return 1 - std::exp(b * U) / 2;
       } else {
-        return exp(-b * U) / 2;
+        return std::exp(-b * U) / 2;
       }
     }
 
     if (L < p * (L + U)) {
-      double num1 = exp(b * (L + p * U / (p - 1)));
-      double num2 = exp(b * (L * (1 / p - 1) - U));
+      double num1 = std::exp(b * (L + p * U / (p - 1)));
+      double num2 = std::exp(b * (L * (1 / p - 1) - U));
       double denom = 2 * (-1 + 2 * p);
       return (-1 * num1 + 2 * num1 * p - num1 * p * p + num2 * p * p) / denom;
     }
     // L >= p(L+U).
-    double num1 = exp(-b * (L + p * U / (p - 1)));
-    double num2 = exp(b * (L - L / p + U));
+    double num1 = std::exp(-b * (L + p * U / (p - 1)));
+    double num2 = std::exp(b * (L - L / p + U));
     double denom = 2 * (-1 + 2 * p);
     return (-2 + num1 * std::pow(-1 + p, 2) + 4 * p - num2 * p * p) / denom;
   }

@@ -97,10 +97,10 @@ class StatusOr : private statusor_internal::StatusOrData<T>,
  public:
   using element_type = T;
 
-  // Constructs a new StatusOr with Status::UNKNOWN status.  This is marked
-  // 'explicit' to try to catch cases like 'return {};', where people think
-  // StatusOr<std::vector<int>> will be initialized with an empty vector,
-  // instead of a Status::UNKNOWN status.
+  // Constructs a new StatusOr with absl::StatusCode::kUnknown status.  This is
+  // marked 'explicit' to try to catch cases like 'return {};', where people
+  // think StatusOr<std::vector<int>> will be initialized with an empty vector,
+  // instead of a absl::StatusCode::kUnknown status.
   explicit StatusOr();
 
   // StatusOr<T> will be copy constructible/assignable if T is copy
@@ -114,8 +114,6 @@ class StatusOr : private statusor_internal::StatusOrData<T>,
   StatusOr& operator=(StatusOr&&) = default;
 
   // Conversion copy/move constructor, T must be convertible from U.
-  // TODO: These should not participate in overload resolution if U
-  // is not convertible to T.
   template <typename U>
   StatusOr(const StatusOr<U>& other);
   template <typename U>
@@ -171,6 +169,18 @@ class StatusOr : private statusor_internal::StatusOrData<T>,
   // returns OkStatus().
   const Status& status() const&;
   Status status() &&;
+
+  // StatusOr<T>::value()
+  //
+  // This is only added for transitioning to base::StatusOr [1], which has this
+  // method implemented.  Here, we will only be calling ValueOrDie, which will
+  // not throw an exception.
+  //
+  // [1] https://github.com/abseil/abseil-cpp/blob/master/absl/status/statusor.h
+  const T& value() const& { return ValueOrDie(); }
+  T& value() & { return ValueOrDie(); }
+  const T&& value() const&& { return std::move(ValueOrDie()); }
+  T&& value() && { return std::move(ValueOrDie()); }
 
   // Returns a reference to our current value, or CHECK-fails if !this->ok(). If
   // you have already checked the status using this->ok() or operator bool(),
@@ -238,7 +248,7 @@ class StatusOr : private statusor_internal::StatusOrData<T>,
 // Implementation details for StatusOr<T>
 
 template <typename T>
-StatusOr<T>::StatusOr() : Base(Status(UNKNOWN, "")) {}
+StatusOr<T>::StatusOr() : Base(Status(absl::StatusCode::kUnknown, "")) {}
 
 template <typename T>
 StatusOr<T>::StatusOr(const T& value) : Base(value) {}

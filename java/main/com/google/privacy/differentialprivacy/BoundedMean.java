@@ -16,7 +16,16 @@
 
 package com.google.privacy.differentialprivacy;
 
+import static java.lang.Math.max;
+import static java.lang.Math.min;
+
 import com.google.auto.value.AutoValue;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
+import com.google.privacy.differentialprivacy.proto.SummaryOuterClass.BoundedMeanSummary;
+import com.google.privacy.differentialprivacy.proto.SummaryOuterClass.BoundedSumSummary;
+import com.google.privacy.differentialprivacy.proto.SummaryOuterClass.CountSummary;
+import com.google.protobuf.InvalidProtocolBufferException;
 import java.util.Collection;
 import javax.annotation.Nullable;
 
@@ -35,10 +44,10 @@ import javax.annotation.Nullable;
  *
  * <p>Ninghui Li, Min Lyu, Dong Su and Weining Yang also propose Algorithm 2.3 for computing private
  * means, which according to them yields better accuracy. However, the proof of the Algorithm 2.3 is
- * flawed and it is not actually DP. See (broken link) for more information.
+ * flawed and it is not actually DP.
  *
- * <p>BoundedMean Supports contributions from a single user to multiple partitions as well as
- * multiple contributions from a single user to a given partition.
+ * <p>Supports contributions from a single privacy unit to multiple partitions as well as multiple
+ * contributions from a single privacy unit to a given partition.
  *
  * <p>The user can provide a {@link Noise} instance which will be used to generate the noise. If no
  * instance is specified, {@link LaplaceNoise} is applied.
@@ -48,8 +57,8 @@ import javax.annotation.Nullable;
  * <p>For more implementation details, see {@link #computeResult()}.
  *
  * <p>For general details and key definitions, see <a href=
- * "https://github.com/google/differential-privacy/blob/master/differential_privacy.md#key-definition">
- * the introduction to Differential Privacy</a>.
+ * "https://github.com/google/differential-privacy/blob/main/differential_privacy.md#key-definitions">
+ * this</a> introduction to Differential Privacy.
  */
 public class BoundedMean {
   private final BoundedMean.Params params;
@@ -61,8 +70,7 @@ public class BoundedMean {
    */
   private final double midpoint;
 
-  /** Was the mean returned to the user? */
-  private boolean resultReturned;
+  private AggregationState state = AggregationState.DEFAULT;
 
   private BoundedMean(BoundedMean.Params params) {
     this.params = params;
@@ -76,29 +84,24 @@ public class BoundedMean {
     double halfEpsilon = params.epsilon() * 0.5;
     Double halfDelta = params.delta() == null ? null : params.delta() * 0.5;
 
-    // normalizedSum stores noised sum of distances of the input entities from the middle of the
-    // range (i.e., "normalized noised sum").
-    // Below are details on how normalizedSum matches the definition from the book:
+    // normalizedSum yields a differentially private sum of the position of the entries e_i relative
+    // to the midpoint m = (lower + upper) / 2 of the range of the bounded mean, i.e., Σ_i (e_i - m)
     //
-    // Let Sum be the exact sum of all entries and Count be the exact count.
-    // We want to return S' = (Sum - Count * midPoint) + Laplace((upper - lower) / epsilon)
+    // count yields a differentially private count of the entries.
     //
-    // Sum - Count*midPoint = Σ_i (x_i - midpoint) where the x_i are the input values.
+    // Given a normalized sum s and count c (both without noise), the true mean can be computed
+    // as: mean =
+    //   s / c + m =
+    //   (Σ_i (e_i - m)) / c + m =
+    //   (Σ_i (e_i - m)) / c + (Σ_i m) / c =
+    //   (Σ_i e_i) / c
     //
-    // (upper-lower)/epsilon = 2*maxDistFromMidpoint/epsilon =
-    // = maxDistFromMidpoint/halfEpsilon
-    //
-    // => S' = Σ_i (e_i - midpoint) + Laplace(maxDistFromMidpoint/halfEpsilon)
-    //
-    // Below we construct
-    // 1. BoundedSum with LInfSensitivity = maxDistFromMidpoint, epsilon = halfEpsilon,
-    // delta = halfDelta. It will sum up(e - midpoint) for each entry e.
-    // 2. Count with epsilon = halfEpsilon, delta = halfDelta. It will count entities.
+    // the rest follows from the code.
     normalizedSum =
         BoundedSum.builder()
             .noise(params.noise())
             .epsilon(halfEpsilon)
-            // TODO: this can be optimized for the Gaussian noise
+            // TODO: this can be optimized for Gaussian noise
             .delta(halfDelta)
             .maxPartitionsContributed(params.maxPartitionsContributed())
             .maxContributionsPerPartition(params.maxContributionsPerPartition())
@@ -110,7 +113,7 @@ public class BoundedMean {
         Count.builder()
             .noise(params.noise())
             .epsilon(halfEpsilon)
-            // TODO: this can be optimized for the Gaussian noise
+            // TODO: this can be optimized for Gaussian noise
             .delta(halfDelta)
             .maxPartitionsContributed(params.maxPartitionsContributed())
             .maxContributionsPerPartition(params.maxContributionsPerPartition())
@@ -121,12 +124,14 @@ public class BoundedMean {
     return BoundedMean.Params.Builder.newBuilder();
   }
 
-  /** Clamps the input value and adds it to the average. */
+  /**
+   * Clamps the input value and adds it to the mean.
+   *
+   * @throws IllegalStateException if this this instance of {@link BoundedMean} has already been
+   *     queried or serialized.
+   */
   public void addEntry(double e) {
-    if (resultReturned) {
-      throw new IllegalStateException(
-          "The mean has already been calculated and returned. It cannot be amended.");
-    }
+    Preconditions.checkState(state.equals(AggregationState.DEFAULT), "Entry cannot be added.");
 
     // NaN is ignored because introducing even a single NaN entry will result in a NaN mean
     // regardless of other entries, which would break the indistinguishability
@@ -141,41 +146,172 @@ public class BoundedMean {
     count.increment();
   }
 
-  /** Clamps the input values and adds them to the average. */
+  /**
+   * Clamps the input values and adds them to the mean.
+   *
+   * @throws IllegalStateException if this this instance of {@link BoundedMean} has already been
+   *     queried or serialized.
+   */
   public void addEntries(Collection<Double> e) {
     e.forEach(this::addEntry);
   }
 
-  private double clamp(double e) {
-    if (e > params.upper()) {
-      return params.upper();
-    }
-
-    if (e < params.lower()) {
-      return params.lower();
-    }
-
-    return e;
+  private double clamp(double value) {
+    return max(min(value, params.upper()), params.lower());
   }
 
   /**
    * Calculates and returns differentially private average of elements added using {@link #addEntry}
    * and {@link #addEntries}. The method can be called only once for a given collection of elements.
    * All subsequent calls will result in throwing an exception.
+   *
+   * <p>Note that the returned value is not an unbiased estimate of the raw bounded mean.
+   *
+   * @throws IllegalStateException if this instance of {@link BoundedMean} has already been queried
+   *     or serialized.
    */
   public double computeResult() {
-    if (resultReturned) {
-      throw new IllegalStateException("The result can be calculated and returned only once.");
-    }
+    Preconditions.checkState(state.equals(AggregationState.DEFAULT), "DP mean cannot be computed.");
 
-    resultReturned = true;
+    state = AggregationState.RESULT_RETURNED;
 
-    long noisedCount = Math.max(1, count.computeResult());
+    long noisedCount = max(1, count.computeResult());
     double normalizedNoisedSum = normalizedSum.computeResult();
 
     // Clamp the average before returning it to ensure it does not exceed the lower and upper
     // bounds.
     return clamp(normalizedNoisedSum / noisedCount + midpoint);
+  }
+
+  /**
+   * Computes a confidence interval that contains the raw bounded mean with a probability greater or
+   * equal to {@code 1 - alpha}. The interval is exclusively based on the noised bounded mean
+   * returned by {@link #computeResult}. Thus, no privacy budget is consumed by this operation.
+   *
+   * <p>Refer to <a
+   * href="https://github.com/google/differential-privacy/tree/main/common_docs/confidence_intervals.md">this</a> doc for
+   * more information.
+   *
+   * @throws IllegalStateException if this this instance of {@link BoundedMean} has not been queried
+   *     yet.
+   */
+  public ConfidenceInterval computeConfidenceInterval(double alpha) {
+    Preconditions.checkState(
+        state.equals(AggregationState.RESULT_RETURNED), "Confidence interval cannot be computed.");
+
+    // The confidence interval of bounded mean is derived from confidence intervals of the mean's
+    // numerator and denominator. The respective confidence levels 1 - alphaNum and 1 - alphaDen can
+    // be chosen arbitrarily as long as
+    //   (1 - alphaNum) * (1 - alphaDen) = 1 - alpha.
+    // The following is a brute force search for alphaNum that minimizes the size of the confidence
+    // interval of bounded mean.
+    double minSize = Double.POSITIVE_INFINITY;
+    ConfidenceInterval tightestConfInt = null;
+    for (int i = 1; i < 1000; i++) {
+      double alphaNum = (i / 1000.0) * alpha;
+      ConfidenceInterval confInt = computeConfidenceInterval(alpha, alphaNum);
+      double size = confInt.upperBound() - confInt.lowerBound();
+      if (size < minSize) {
+        minSize = size;
+        tightestConfInt = confInt;
+      }
+    }
+    return tightestConfInt;
+  }
+
+  /**
+   * Like {@link #computeConfidenceInterval(double)} with the additional constraint that the
+   * confidence level of the mean's numerator is {@code 1 - alphaNum}.
+   */
+  @VisibleForTesting
+  ConfidenceInterval computeConfidenceInterval(double alpha, double alphaNum) {
+    // Setting alphaDen such that (1 - alpha) = (1 - alphaNum) * (1 - alphaDen).
+    double alphaDen = (alpha - alphaNum) / (1 - alphaNum);
+    ConfidenceInterval confIntNum = normalizedSum.computeConfidenceInterval(alphaNum);
+    ConfidenceInterval confIntDen = count.computeConfidenceInterval(alphaDen);
+
+    // Ensuring that the lower and upper bounds of the denominator are consistent with how
+    // computeResult() processes the denominator.
+    confIntDen =
+        ConfidenceInterval.create(
+            max(1.0, confIntDen.lowerBound()), max(1.0, confIntDen.upperBound()));
+    double meanLowerBound;
+    double meanUpperBound;
+    if (confIntNum.lowerBound() >= 0.0) {
+      meanLowerBound = confIntNum.lowerBound() / confIntDen.upperBound();
+    } else {
+      meanLowerBound = confIntNum.lowerBound() / confIntDen.lowerBound();
+    }
+    if (confIntNum.upperBound() >= 0.0) {
+      meanUpperBound = confIntNum.upperBound() / confIntDen.lowerBound();
+    } else {
+      meanUpperBound = confIntNum.upperBound() / confIntDen.upperBound();
+    }
+
+    // Ensuring that the lower and upper bounds of the mean are consistent with how computeResult()
+    // processes the mean.
+    meanLowerBound = clamp(meanLowerBound + midpoint);
+    meanUpperBound = clamp(meanUpperBound + midpoint);
+    return ConfidenceInterval.create(meanLowerBound, meanUpperBound);
+  }
+
+  /**
+   * Returns a serializable summary of the current state of this {@link BoundedMean} instance and
+   * its parameters. The summary can be used to merge this instance with another instance of {@link
+   * BoundedMean}.
+   *
+   * <p>This method cannot be invoked if the mean has already been queried, i.e., {@link
+   * computeResult()} has been called. Moreover, after this instance of {@link BoundedMean} has been
+   * serialized once, further modification and queries are not possible anymore.
+   *
+   * @throws IllegalStateException if this instance of {@link BoundedMean} has already been queried.
+   */
+  public byte[] getSerializableSummary() {
+    Preconditions.checkState(
+        state != AggregationState.RESULT_RETURNED, "Mean cannot be serialized.");
+
+    state = AggregationState.SERIALIZED;
+
+    CountSummary deserializedCount;
+    BoundedSumSummary deserializedNormalizedSum;
+    try {
+      deserializedCount = CountSummary.parseFrom(count.getSerializableSummary());
+      deserializedNormalizedSum =
+          BoundedSumSummary.parseFrom(normalizedSum.getSerializableSummary());
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalStateException("Mean object cannot be serialized. Reason: " + e);
+    }
+
+    BoundedMeanSummary serializedMean =
+        BoundedMeanSummary.newBuilder()
+            .setCountSummary(deserializedCount)
+            .setSumSummary(deserializedNormalizedSum)
+            .build();
+
+    return serializedMean.toByteArray();
+  }
+
+  /**
+   * Merges the output of {@link #getSerializableSummary()} from a different instance of {@link
+   * BoundedMean} with this instance. Intended to be used in the context of distributed computation.
+   *
+   * @throws IllegalArgumentException if the parameters of the two instances (epsilon, delta,
+   *     contribution bounds, etc.) do not match or if the passed serialized summary is invalid.
+   * @throws IllegalStateException if this this instance of {@link BoundedMean} has already been
+   *     queried or serialized.
+   */
+  public void mergeWith(byte[] otherBoundedMeanSummary) {
+    Preconditions.checkState(state.equals(AggregationState.DEFAULT), "Means cannot be merged.");
+
+    BoundedMeanSummary otherSummaryParsed;
+    try {
+      otherSummaryParsed = BoundedMeanSummary.parseFrom(otherBoundedMeanSummary);
+    } catch (InvalidProtocolBufferException pbe) {
+      throw new IllegalArgumentException(pbe);
+    }
+
+    this.normalizedSum.mergeWith(otherSummaryParsed.getSumSummary().toByteArray());
+    this.count.mergeWith(otherSummaryParsed.getCountSummary().toByteArray());
   }
 
   @AutoValue
@@ -230,13 +366,14 @@ public class BoundedMean {
       public abstract BoundedMean.Params.Builder noise(Noise value);
 
       /**
-       * Lower bound for the entries added to the mean. Lower values will be clamped to this bound.
+       * Lower bound for the entries added to the mean. Any entires smaller than this value will be
+       * set to this value.
        */
       public abstract BoundedMean.Params.Builder lower(double value);
 
       /**
-       * Higher bound for the entries added to the mean. Greater values will be clamped to this
-       * bound.
+       * Upper bound for the entries added to the mean. Any entires greater than this value will be
+       * set to this value.
        */
       public abstract BoundedMean.Params.Builder upper(double value);
 
@@ -247,7 +384,7 @@ public class BoundedMean {
         // No need to check noise nullability: the noise is defaulted to Laplace noise.
         DpPreconditions.checkEpsilon(params.epsilon());
         DpPreconditions.checkNoiseDelta(params.delta(), params.noise());
-        DpPreconditions.checkL0Sensitivity(params.maxPartitionsContributed());
+        DpPreconditions.checkMaxPartitionsContributed(params.maxPartitionsContributed());
         DpPreconditions.checkMaxContributionsPerPartition(params.maxContributionsPerPartition());
         DpPreconditions.checkBounds(params.lower(), params.upper());
 

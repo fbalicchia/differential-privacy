@@ -17,10 +17,21 @@
 #ifndef DIFFERENTIAL_PRIVACY_ALGORITHMS_COUNT_H_
 #define DIFFERENTIAL_PRIVACY_ALGORITHMS_COUNT_H_
 
+#include <memory>
+#include <optional>
+#include <utility>
+
+#include <cstdint>
 #include "google/protobuf/any.pb.h"
-#include "base/status.h"
+#include "absl/memory/memory.h"
+#include "absl/status/status.h"
+#include "base/statusor.h"
 #include "algorithms/algorithm.h"
 #include "algorithms/numerical-mechanisms.h"
+#include "algorithms/util.h"
+#include "proto/util.h"
+#include "proto/confidence-interval.pb.h"
+#include "proto/data.pb.h"
 #include "proto/summary.pb.h"
 #include "base/status_macros.h"
 
@@ -32,16 +43,15 @@ class Count : public Algorithm<T> {
  public:
   class Builder;
 
-  void AddEntry(const T& v) override { ++count_; }
+  void AddEntry(const T& v) override { AddMultipleEntries(v, 1); }
 
   base::StatusOr<ConfidenceInterval> NoiseConfidenceInterval(
-      double confidence_level, double privacy_budget = 1) override {
-    return mechanism_->NoiseConfidenceInterval(confidence_level,
-                                               privacy_budget);
+      double confidence_level) override {
+    return mechanism_->NoiseConfidenceInterval(confidence_level, 1.0);
   }
 
   // Create and return summary containing the count.
-  Summary Serialize() override {
+  Summary Serialize() const override {
     // Create CountSummary.
     CountSummary count_summ;
     count_summ.set_count(count_);
@@ -53,20 +63,19 @@ class Count : public Algorithm<T> {
   }
 
   // Add count from serialized data.
-  base::Status Merge(const Summary& summary) override {
+  absl::Status Merge(const Summary& summary) override {
     if (!summary.has_data()) {
-      return base::InvalidArgumentError(
-          "Cannot merge summary with no count data.");
+      return absl::InternalError("Cannot merge summary with no count data.");
     }
 
     // Add counts.
     CountSummary count_summary;
     if (!summary.data().UnpackTo(&count_summary)) {
-      return base::InvalidArgumentError("Count summary unable to be unpacked.");
+      return absl::InternalError("Count summary unable to be unpacked.");
     }
     count_ += count_summary.count();
 
-    return base::OkStatus();
+    return absl::OkStatus();
   }
 
   int64_t MemoryUsed() override {
@@ -78,47 +87,111 @@ class Count : public Algorithm<T> {
   }
 
  protected:
-  base::StatusOr<Output> GenerateResult(double privacy_budget,
-                                        double noise_interval_level) override {
+  base::StatusOr<Output> GenerateResult(double noise_interval_level) override {
     Output output;
-    std::size_t countWithNoise = std::max<int64_t>(
-        std::round(mechanism_->AddNoise(count_, privacy_budget)), 0);
+    int64_t countWithNoise = mechanism_->AddNoise(count_);
     AddToOutput<int64_t>(&output, countWithNoise);
 
     base::StatusOr<ConfidenceInterval> interval =
-        NoiseConfidenceInterval(noise_interval_level, privacy_budget);
+        NoiseConfidenceInterval(noise_interval_level);
     if (interval.ok()) {
       *(output.mutable_error_report()->mutable_noise_confidence_interval()) =
-          interval.ValueOrDie();
+          interval.value();
     }
     return output;
   }
 
   void ResetState() override { count_ = 0; }
 
-  // The constructor and count_ are non-private for testing.
-  Count(double epsilon, std::unique_ptr<NumericalMechanism> mechanism)
-      : Algorithm<T>(epsilon), count_(0), mechanism_(std::move(mechanism)) {}
+  int64_t GetCount() const { return count_; }
 
-  std::size_t count_;
+  // The constructor and count_ are non-private for testing.
+  Count(double epsilon, double delta,
+        std::unique_ptr<NumericalMechanism> mechanism)
+      : Algorithm<T>(epsilon, delta),
+        count_(0),
+        mechanism_(std::move(mechanism)) {}
 
  private:
+  void AddMultipleEntries(const T& v, int64_t num_of_entries) {
+    absl::Status status =
+        ValidateIsNonNegative(num_of_entries, "Number of entries");
+    if (!status.ok()) {
+      return;
+    }
+
+    count_ += num_of_entries;
+  }
+
+  // Friend class for testing only
+  friend class CountTestPeer;
+
+  // Count of the number of entries added.
+  int64_t count_;
+
   std::unique_ptr<NumericalMechanism> mechanism_;
 };
 
 template <typename T>
-class Count<T>::Builder
-    : public AlgorithmBuilder<T, Count<T>, Count<T>::Builder> {
- private:
-  using AlgorithmBuilder =
-      differential_privacy::AlgorithmBuilder<T, Count<T>, Count<T>::Builder>;
+class Count<T>::Builder {
+ public:
+  Count<T>::Builder& SetEpsilon(double epsilon) {
+    epsilon_ = epsilon;
+    return *this;
+  }
 
-  base::StatusOr<std::unique_ptr<Count<T>>> BuildAlgorithm() override {
-    std::unique_ptr<NumericalMechanism> mechanism;
-    ASSIGN_OR_RETURN(mechanism, AlgorithmBuilder::UpdateAndBuildMechanism());
+  Count<T>::Builder& SetDelta(double delta) {
+    delta_ = delta;
+    return *this;
+  }
 
+  Count<T>::Builder& SetMaxPartitionsContributed(
+      int max_partitions_contributed) {
+    max_partitions_contributed_ = max_partitions_contributed;
+    return *this;
+  }
+
+  Count<T>::Builder& SetMaxContributionsPerPartition(
+      int max_contributions_per_partition) {
+    max_contributions_per_partition_ = max_contributions_per_partition;
+    return *this;
+  }
+
+  Count<T>::Builder& SetLaplaceMechanism(
+      std::unique_ptr<NumericalMechanismBuilder> mechanism_builder) {
+    mechanism_builder_ = std::move(mechanism_builder);
+    return *this;
+  }
+
+  base::StatusOr<std::unique_ptr<Count<T>>> Build() {
+    RETURN_IF_ERROR(ValidateEpsilon(epsilon_));
+    RETURN_IF_ERROR(ValidateDelta(delta_));
+    RETURN_IF_ERROR(
+        ValidateMaxPartitionsContributed(max_partitions_contributed_));
+    RETURN_IF_ERROR(
+        ValidateMaxContributionsPerPartition(max_contributions_per_partition_));
+
+    ASSIGN_OR_RETURN(std::unique_ptr<NumericalMechanism> count_mechanism,
+                     BuildCountMechanism());
     return absl::WrapUnique(
-        new Count<T>(AlgorithmBuilder::epsilon_.value(), std::move(mechanism)));
+        new Count<T>(epsilon_.value(), delta_, std::move(count_mechanism)));
+  }
+
+ private:
+  absl::optional<double> epsilon_;
+  double delta_ = 0;
+  int max_partitions_contributed_ = 1;
+  int max_contributions_per_partition_ = 1;
+  std::unique_ptr<NumericalMechanismBuilder> mechanism_builder_ =
+      std::make_unique<LaplaceMechanism::Builder>();
+
+  base::StatusOr<std::unique_ptr<NumericalMechanism>> BuildCountMechanism() {
+    return mechanism_builder_->Clone()
+        ->SetEpsilon(epsilon_.value())
+        .SetDelta(delta_)
+        .SetL0Sensitivity(max_partitions_contributed_)
+        .SetLInfSensitivity(max_contributions_per_partition_)
+        .Build();
   }
 };
 

@@ -27,10 +27,10 @@ cc_library(
     name = "proto_matchers",
     testonly = 1,
     hdrs = ["proto_matchers.h"],
-    copts = ["-Wno-sign-compare"],
     deps = [
-        "@com_google_googletest//:gtest_main",
+        "//base:logging",
         "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
         "@com_google_protobuf//:protobuf",
     ],
 )
@@ -40,12 +40,11 @@ cc_library(
     testonly = 1,
     srcs = ["status_matchers.cc"],
     hdrs = ["status_matchers.h"],
-    copts = ["-Wno-sign-compare"],
     deps = [
-        "@com_google_googletest//:gtest",
         "//base:status",
         "//base:statusor",
         "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
     ],
 )
 
@@ -53,12 +52,11 @@ cc_test(
     name = "status_matchers_test",
     size = "small",
     srcs = ["status_matchers_test.cc"],
-    copts = ["-Wno-sign-compare"],
     deps = [
         ":status_matchers",
-        "@com_google_googletest//:gtest_main",
-        "@com_google_googletest//:gtest",
         "//base:status",
         "//base:statusor",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
     ],
 )

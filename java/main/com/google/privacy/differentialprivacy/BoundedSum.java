@@ -16,19 +16,25 @@
 
 package com.google.privacy.differentialprivacy;
 
+import static java.lang.Math.abs;
+import static java.lang.Math.max;
+import static java.lang.Math.min;
+
 import com.google.auto.value.AutoValue;
-import com.google.differentialprivacy.Data.ValueType;
-import com.google.differentialprivacy.SummaryOuterClass.BoundedSumSummary;
+import com.google.common.base.Preconditions;
+import com.google.privacy.differentialprivacy.proto.Data.ValueType;
+import com.google.privacy.differentialprivacy.proto.SummaryOuterClass.BoundedSumSummary;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.util.Collection;
 import javax.annotation.Nullable;
 
 /**
- * Calculates a differentially private sum for a collection of values.
+ * Calculates a differentially private sum for a collection of values using the Laplace or Gaussian
+ * mechanism.
  *
- * <p>This class allows an individual privacy unit (e.g., a single user) to contribute data to
- * multiple different partitions. The class does not check whether the number of partitions is
- * within the specified bounds. This is the responsibility of the caller.
+ * <p>This class allows a single privacy unit (e.g., an individual) to contribute data to multiple
+ * different partitions. The class does not check whether the number of partitions is within the
+ * specified bounds. This is the responsibility of the caller.
  *
  * <p>This class assumes that each privacy unit may contribute to a single partition only once
  * (i.e., only one data contribution per privacy unit per partition). Multiple contributions from a
@@ -37,21 +43,24 @@ import javax.annotation.Nullable;
  * <p>The user can provide a {@link Noise} instance which will be used to generate the noise. If no
  * instance is specified, {@link LaplaceNoise} is applied.
  *
+ * <p>This class provides an unbiased estimator for the raw bounded sum meaning that the expected
+ * value of the differentially private bounded sum is equal to the raw bounded sum.
+ *
  * <p>Note: this class is not thread-safe.
  *
  * <p>For more implementation details, see {@link #computeResult()}.
  *
  * <p>For general details and key definitions, see <a href=
- * "https://github.com/google/differential-privacy/blob/master/differential_privacy.md#key-definition">
- * the introduction to Differential Privacy</a>.
+ * "https://github.com/google/differential-privacy/blob/main/differential_privacy.md#key-definitions">
+ * this</a> introduction to Differential Privacy.
  */
 public class BoundedSum {
 
   private final Params params;
   private double sum;
+  private double noisedSum;
 
-  // Was the sum returned to the user?
-  private boolean resultReturned;
+  private AggregationState state = AggregationState.DEFAULT;
 
   private BoundedSum(Params params) {
     sum = 0.0;
@@ -62,12 +71,14 @@ public class BoundedSum {
     return Params.Builder.newBuilder();
   }
 
-  /** Clamps the input value and adds it to the sum. */
+  /**
+   * Clamps the input value and adds it to the sum.
+   *
+   * @throws IllegalStateException if this instance of {@link BoundedSum} has already been queried
+   *     or serialized.
+   */
   public void addEntry(double e) {
-    if (resultReturned) {
-      throw new IllegalStateException(
-          "The sum has already been calculated and returned. It cannot be amended.");
-    }
+    Preconditions.checkState(state.equals(AggregationState.DEFAULT), "Entry cannot be added.");
 
     // NaN is ignored because introducing even a single NaN entry will result in a NaN sum
     // regardless of other entries, which would break the indistinguishability property required
@@ -79,49 +90,101 @@ public class BoundedSum {
     sum += clamp(e);
   }
 
-  /** Clamps the input values and adds them to the sum. */
+  /**
+   * Clamps the input values and adds them to the sum.
+   *
+   * @throws IllegalStateException if this instance of {@link BoundedSum} has already been queried
+   *     or serialized.
+   */
   public void addEntries(Collection<Double> e) {
     e.forEach(this::addEntry);
   }
 
-  private double clamp(double e) {
-    if (e > params.upper()) {
-      return params.upper();
-    }
-
-    if (e < params.lower()) {
-      return params.lower();
-    }
-
-    return e;
+  private double clamp(double value) {
+    return max(min(value, params.upper()), params.lower());
   }
 
   /**
    * Computes and returns a differentially private sum of the elements added via {@link #addEntry}
    * and {@link #addEntries}. The method can be called only once for a given collection of elements.
    * All subsequent calls will throw an exception.
+   *
+   * <p>The returned value is an unbiased estimate of the raw bounded sum.
+   *
+   * <p>The returned value may sometimes be outside the set of possible raw bounded sums, e.g., the
+   * differentially private bounded sum may be positive although neither the lower nor the upper
+   * bound are positive. This can be corrected by the caller of this method, e.g., by snapping the
+   * result to the closest value representing a bounded sum that is possible. Note that such post
+   * processing introduces bias to the result.
+   *
+   * @throws IllegalStateException if this instance of {@link BoundedSum} has already been queried
+   *     or serialized.
    */
   public double computeResult() {
-    if (resultReturned) {
-      throw new IllegalStateException("The result can be calculated and returned only once.");
-    }
+    Preconditions.checkState(state.equals(AggregationState.DEFAULT), "DP sum cannot be computed.");
 
-    resultReturned = true;
-    return params
-        .noise()
-        .addNoise(sum, getL0Sensitivity(), getLInfSensitivity(), params.epsilon(), params.delta());
+    state = AggregationState.RESULT_RETURNED;
+
+    noisedSum =
+        params
+            .noise()
+            .addNoise(
+                sum, getL0Sensitivity(), getLInfSensitivity(), params.epsilon(), params.delta());
+
+    return noisedSum;
   }
 
   /**
-   * Returns a serializable version of the current state of {@link BoundedSum} and the parameters
-   * used to calculate it. After calling this method, this instance of BoundedSum will be unusable,
-   * since the result can only be output once.
+   * Computes a confidence interval that contains the raw bounded sum with a probability greater or
+   * equal to {@code 1 - alpha}. The interval is exclusively based on the noised bounded sum
+   * returned by {@link #computeResult}. Thus, no privacy budget is consumed by this operation.
+   *
+   * <p>Refer to <a
+   * href="https://github.com/google/differential-privacy/tree/main/common_docs/confidence_intervals.md">this</a> doc for
+   * more information.
+   *
+   * @throws IllegalStateException if this instance of {@link BoundedSum} has not been queried yet.
+   */
+  public ConfidenceInterval computeConfidenceInterval(double alpha) {
+    Preconditions.checkState(
+        state.equals(AggregationState.RESULT_RETURNED), "Confidence interval cannot be computed.");
+
+    ConfidenceInterval confInt =
+        params
+            .noise()
+            .computeConfidenceInterval(
+                noisedSum,
+                getL0Sensitivity(),
+                getLInfSensitivity(),
+                params.epsilon(),
+                params.delta(),
+                alpha);
+    if (params.lower() >= 0.0) {
+      confInt =
+          ConfidenceInterval.create(max(0.0, confInt.lowerBound()), max(0.0, confInt.upperBound()));
+    } else if (params.upper() <= 0.0) {
+      confInt =
+          ConfidenceInterval.create(min(0.0, confInt.lowerBound()), min(0.0, confInt.upperBound()));
+    }
+    return confInt;
+  }
+
+  /**
+   * Returns a serializable summary of the current state of this {@link BoundedSum} instance and its
+   * parameters. The summary can be used to merge this instance with another instance of {@link
+   * BoundedSum}.
+   *
+   * <p>This method cannot be invoked if the sum has already been queried, i.e., {@link
+   * computeResult()} has been called. Moreover, after this instance of {@link BoundedSum} has been
+   * serialized once, further modification and queries are not possible anymore.
+   *
+   * @throws IllegalStateException if this instance of {@link BoundedSum} has already been queried.
    */
   public byte[] getSerializableSummary() {
-    if (resultReturned) {
-      throw new IllegalStateException(
-          "The sum has already been returned. It cannot be returned again.");
-    }
+    Preconditions.checkState(
+        !state.equals(AggregationState.RESULT_RETURNED), "Sum cannot be serialized.");
+
+    state = AggregationState.SERIALIZED;
 
     ValueType sumValue = ValueType.newBuilder().setFloatValue(sum).build();
     BoundedSumSummary.Builder builder =
@@ -137,27 +200,20 @@ public class BoundedSum {
       builder.setDelta(params.delta());
     }
 
-    // Record that this object is no longer suitable for producing a differentially private sum,
-    // since serialization exposes the object's raw state.
-    resultReturned = true;
-
     return builder.build().toByteArray();
   }
 
   /**
-   * Merges this instance with the output of {@link #getSerializableSummary()} from a different
-   * {@link BoundedSum} and stores the merged result in this instance. This is required in the
-   * distributed calculations context for merging partial results.
+   * Merges the output of {@link #getSerializableSummary()} from a different instance of {@link
+   * BoundedSum} with this instance. Intended to be used in the context of distributed computation.
    *
-   * @throws IllegalArgumentException if not all config parameters (e.g., epsilon, contribution
-   *     bounds) are equal or if the passed serialized sum is invalid.
-   * @throws IllegalStateException if this sum has already been calculated or serialized.
+   * @throws IllegalArgumentException if the parameters of the two instances (epsilon, delta,
+   *     contribution bounds, etc.) do not match or if the passed serialized summary is invalid.
+   * @throws IllegalStateException if this instance of {@link BoundedSum} has already been queried
+   *     or serialized.
    */
   public void mergeWith(byte[] otherBoundedSumSummary) {
-    if (resultReturned) {
-      throw new IllegalStateException(
-          "The sum has already been calculated and returned. It cannot be merged.");
-    }
+    Preconditions.checkState(state.equals(AggregationState.DEFAULT), "Sums cannot be merged.");
 
     BoundedSumSummary otherSummaryParsed;
     try {
@@ -170,31 +226,33 @@ public class BoundedSum {
     this.sum += otherSummaryParsed.getPartialSum().getFloatValue();
   }
 
-  private void checkMergeParametersAreEqual(BoundedSumSummary otherSum) {
+  private void checkMergeParametersAreEqual(BoundedSumSummary summary) {
     DpPreconditions.checkMergeMechanismTypesAreEqual(
-        params.noise().getMechanismType(), otherSum.getMechanismType());
-    DpPreconditions.checkMergeEpsilonAreEqual(
-        params.epsilon(), otherSum.getEpsilon());
-    DpPreconditions.checkMergeDeltaAreEqual(
-        params.delta(), otherSum.getDelta());
+        params.noise().getMechanismType(), summary.getMechanismType());
+    DpPreconditions.checkMergeEpsilonAreEqual(params.epsilon(), summary.getEpsilon());
+    DpPreconditions.checkMergeDeltaAreEqual(params.delta(), summary.getDelta());
     DpPreconditions.checkMergeMaxPartitionsContributedAreEqual(
-        params.maxPartitionsContributed(),
-        otherSum.getMaxPartitionsContributed());
+        params.maxPartitionsContributed(), summary.getMaxPartitionsContributed());
     DpPreconditions.checkMergeMaxContributionsPerPartitionAreEqual(
-        params.maxContributionsPerPartition(), otherSum.getMaxContributionsPerPartition());
+        params.maxContributionsPerPartition(), summary.getMaxContributionsPerPartition());
     DpPreconditions.checkMergeBoundsAreEqual(
-        params.lower(), otherSum.getLower(), params.upper(), otherSum.getUpper());
-  }
-
-  private double getLInfSensitivity() {
-    return Math.max(Math.abs(params.lower()), Math.abs(params.upper()))
-        * params.maxContributionsPerPartition();
+        params.lower(), summary.getLower(), params.upper(), summary.getUpper());
   }
 
   private int getL0Sensitivity() {
     // maxPartitionsContributed is the user-facing parameter, which is technically the same as
     // L_0 sensitivity used by the noise internally.
     return params.maxPartitionsContributed();
+  }
+
+  private double getLInfSensitivity() {
+    return getLInfSensitivity(
+        params.lower(), params.upper(), params.maxContributionsPerPartition());
+  }
+
+  private static double getLInfSensitivity(
+      double lower, double upper, int maxContributionsPerPartition) {
+    return max(abs(lower), abs(upper)) * maxContributionsPerPartition;
   }
 
   @AutoValue
@@ -216,16 +274,51 @@ public class BoundedSum {
 
     @AutoValue.Builder
     public abstract static class Builder {
-      private static void checkLInfOverflow(double bound, int maxContributionsPerPartition) {
-        // When Math.abs(bound) * maxContributionsPerPartition overflows, it becomes
-        // Double.POSITIVE_INFINITY, which is bigger than Double.MAX_VALUE.
-        if (Double.compare(Math.abs(bound) * maxContributionsPerPartition, Double.MAX_VALUE) > 0) {
-          throw new IllegalArgumentException(
-              String.format(
-                  "bound and maxContributionsPerPartition are too high - the LInfSensitivity may"
-                      + " overflow. Provided values: bound = %s, maxContributionsPerPartition = %d",
-                  bound, maxContributionsPerPartition));
-        }
+      private static void checkLInfSensitivityOverflow(
+          double lower, double upper, int maxContributionsPerPartition) {
+        double lInfSensitivity = getLInfSensitivity(lower, upper, maxContributionsPerPartition);
+        Preconditions.checkArgument(
+            Double.compare(lInfSensitivity, Double.MAX_VALUE) <= 0,
+            "bounds and maxContributionsPerPartition are too high - the LInfSensitivity "
+                + " overflows. Provided values: lower bound = %s, upper bound = %s,"
+                + " maxContributionsPerPartition = %s",
+            lower,
+            upper,
+            maxContributionsPerPartition);
+      }
+
+      private static void checkL1SensitivityOverflow(
+          double lower,
+          double upper,
+          int maxContributionsPerPartition,
+          int maxPartitionsContributed) {
+        double lInfSensitivity = getLInfSensitivity(lower, upper, maxContributionsPerPartition);
+        double l1Sensitivity = Noise.getL1Sensitivity(maxPartitionsContributed, lInfSensitivity);
+        Preconditions.checkArgument(
+            Double.compare(l1Sensitivity, Double.MAX_VALUE) <= 0,
+            "bounds and maxContributionsPerPartition are too high - the L1Sensitivity "
+                + " overflows. Provided values: lower bound = %s, upper bound = %s,"
+                + " maxContributionsPerPartition = %s",
+            lower,
+            upper,
+            maxContributionsPerPartition);
+      }
+
+      private static void checkL2SensitivityOverflow(
+          double lower,
+          double upper,
+          int maxContributionsPerPartition,
+          int maxPartitionsContributed) {
+        double lInfSensitivity = getLInfSensitivity(lower, upper, maxContributionsPerPartition);
+        double l2Sensitivity = Noise.getL2Sensitivity(maxPartitionsContributed, lInfSensitivity);
+        Preconditions.checkArgument(
+            Double.compare(l2Sensitivity, Double.MAX_VALUE) <= 0,
+            "bounds and maxContributionsPerPartition are too high - the L2Sensitivity "
+                + " overflows. Provided values: lower bound = %s, upper bound = %s,"
+                + " maxContributionsPerPartition = %s",
+            lower,
+            upper,
+            maxContributionsPerPartition);
       }
 
       private static Builder newBuilder() {
@@ -258,22 +351,22 @@ public class BoundedSum {
       public abstract Builder noise(Noise value);
 
       /**
-       * Lower bound for the entries added to the sum. Any data values below this value will be
-       * clamped (i.e., set) to this bound.
+       * Lower bound for the entries added to the sum. Any entires smaller than this value will be
+       * set to this value.
        */
       public abstract Builder lower(double value);
 
       /**
-       * Upper bound for the entries added to the sum. Any data values above this value will be
-       * clamped (i.e., set) to this bound.
+       * Upper bound for the entries added to the sum. Any entires greater than this value will be
+       * set to this value.
        */
       public abstract Builder upper(double value);
 
       /**
-       * Maximum number of contributions associated with a single privacy unit (e.g., an
-       * individual) to a single partition. This is used to calculate the sensitivity of the sum
-       * operation. This is not public because it should only be used by other aggregation functions
-       * inside the library. See {@link BoundedSum} for more details.
+       * Maximum number of contributions associated with a single privacy unit (e.g., an individual)
+       * to a single partition. This is used to calculate the sensitivity of the sum operation. This
+       * is not public because it should only be used by other aggregation functions inside the
+       * library. See {@link BoundedSum} for more details.
        */
       abstract Builder maxContributionsPerPartition(int value);
 
@@ -288,8 +381,26 @@ public class BoundedSum {
         DpPreconditions.checkMaxContributionsPerPartition(params.maxContributionsPerPartition());
         DpPreconditions.checkBounds(params.lower(), params.upper());
 
-        checkLInfOverflow(params.lower(), params.maxContributionsPerPartition());
-        checkLInfOverflow(params.upper(), params.maxContributionsPerPartition());
+        switch (params.noise().getMechanismType()) {
+          case LAPLACE:
+            checkL1SensitivityOverflow(
+                params.lower(),
+                params.upper(),
+                params.maxContributionsPerPartition(),
+                params.maxPartitionsContributed());
+            break;
+          case GAUSSIAN:
+            checkL2SensitivityOverflow(
+                params.lower(),
+                params.upper(),
+                params.maxContributionsPerPartition(),
+                params.maxPartitionsContributed());
+            break;
+          default:
+            break;
+        }
+        checkLInfSensitivityOverflow(
+            params.lower(), params.upper(), params.maxContributionsPerPartition());
 
         return new BoundedSum(params);
       }

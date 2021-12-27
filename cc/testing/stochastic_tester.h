@@ -19,6 +19,7 @@
 #define DIFFERENTIAL_PRIVACY_TESTING_STOCHASTIC_TESTER_H_
 
 #include <cmath>
+#include <cstdlib>
 #include <iomanip>
 #include <stack>
 #include <type_traits>
@@ -26,6 +27,7 @@
 #include "base/logging.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/hash/hash.h"
+#include "base/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "algorithms/algorithm.h"
 #include "algorithms/util.h"
@@ -202,7 +204,7 @@ class StochasticTester<T, OutputT> {
       // status as a regular value, to be substituted during histogram
       // generation.
       if (output.ok()) {
-        samples[i] = GetValue<OutputT>(output.ValueOrDie());
+        samples[i] = GetValue<OutputT>(output.value());
       } else {
         samples[i] = output.status();
       }
@@ -295,6 +297,10 @@ typename StochasticTester<T, OutputT>::HistogramOptions
 StochasticTester<T, OutputT>::ComputeHistogramOptions(
     const std::vector<OutputT>& sample) {
   HistogramOptions options;
+  if (sample.empty()) {
+    return options;
+  }
+
   double interquartile_range =
       OrderStatistic(.75, sample) - OrderStatistic(.25, sample);
   // The bin width formula for the rule is 2*IQR / cbrt(n).  When this is zero,
@@ -373,12 +379,12 @@ void StochasticTester<T, OutputT>::ReplaceErrorWithValue(
   std::vector<OutputT> dy_samples_no_error;
   for (const base::StatusOr<OutputT>& e : dx_samples) {
     if (e.ok()) {
-      dx_samples_no_error.push_back(e.ValueOrDie());
+      dx_samples_no_error.push_back(e.value());
     }
   }
   for (const base::StatusOr<OutputT>& e : dy_samples) {
     if (e.ok()) {
-      dy_samples_no_error.push_back(e.ValueOrDie());
+      dy_samples_no_error.push_back(e.value());
     }
   }
   OutputT error_value = 0;
@@ -393,14 +399,14 @@ void StochasticTester<T, OutputT>::ReplaceErrorWithValue(
   // Copy values in the sample, replacing errors with the error value.
   for (int i = 0; i < dx_value_samples->size(); ++i) {
     if (dx_samples[i].ok()) {
-      (*dx_value_samples)[i] = dx_samples[i].ValueOrDie();
+      (*dx_value_samples)[i] = dx_samples[i].value();
     } else {
       (*dx_value_samples)[i] = error_value;
     }
   }
   for (int i = 0; i < dy_value_samples->size(); ++i) {
     if (dy_samples[i].ok()) {
-      (*dy_value_samples)[i] = dy_samples[i].ValueOrDie();
+      (*dy_value_samples)[i] = dy_samples[i].value();
     } else {
       (*dy_value_samples)[i] = error_value;
     }
@@ -411,6 +417,9 @@ template <typename T, typename OutputT>
 bool StochasticTester<T, OutputT>::CheckDpPredicate(
     const std::vector<base::StatusOr<OutputT>>& dx_samples,
     const std::vector<base::StatusOr<OutputT>>& dy_samples) {
+  if (dx_samples.empty() || dy_samples.empty()) {
+    return true;
+  }
   double epsilon = algorithm_->GetEpsilon();
 
   // Handle error outputs by replacing them with a default error value. We must
@@ -460,20 +469,20 @@ bool StochasticTester<T, OutputT>::CheckDpPredicate(
   // therefore compute an interval for each.
   double dx_size = static_cast<double>(dx_samples.size());
   double dy_size = static_cast<double>(dy_samples.size());
-  double critical_value =
+  base::StatusOr<double> critical_value =
       Qnorm(1 - (kHistogramPaddingAlpha / 2 / actual_num_buckets), /*mu=*/0.0,
-            /*sigma=*/1.0)
-          .ValueOrDie();
+            /*sigma=*/1.0);
+  CHECK(critical_value.ok()) << critical_value.status();
   double dx_error_interval =
-      critical_value * sqrt(actual_num_buckets / dx_size) / 2;
+      *critical_value * std::sqrt(actual_num_buckets / dx_size) / 2;
   double dy_error_interval =
-      critical_value * sqrt(actual_num_buckets / dy_size) / 2;
+      *critical_value * std::sqrt(actual_num_buckets / dy_size) / 2;
 
   for (int i = 0; i < options.num_bins; ++i) {
-    double px = dx_hist.BinCount(i).ValueOrDie() / dx_size;
-    double py = dy_hist.BinCount(i).ValueOrDie() / dy_size;
-    double px_differential_privacy_bound = exp(epsilon) * px;
-    double py_differential_privacy_bound = exp(epsilon) * py;
+    double px = dx_hist.BinCountOrDie(i) / dx_size;
+    double py = dy_hist.BinCountOrDie(i) / dy_size;
+    double px_differential_privacy_bound = std::exp(epsilon) * px;
+    double py_differential_privacy_bound = std::exp(epsilon) * py;
 
     // The error interval bounds a function over [0, 1] represented by the
     // histogram, which is the probability / (1 / num_bins) at each bucket.
@@ -482,25 +491,29 @@ bool StochasticTester<T, OutputT>::CheckDpPredicate(
     // probability * num_bins. To use this bound for probabilities, we
     // divide the result num_bins.
     double px_upper_bound =
-        std::pow(sqrt(px * actual_num_buckets) + dx_error_interval, 2) /
+        std::pow(std::sqrt(px * actual_num_buckets) + dx_error_interval, 2) /
         actual_num_buckets;
     double py_upper_bound =
-        std::pow(sqrt(py * actual_num_buckets) + dy_error_interval, 2) /
+        std::pow(std::sqrt(py * actual_num_buckets) + dy_error_interval, 2) /
         actual_num_buckets;
     double px_lower_bound = std::max(
-        0.0, std::pow(sqrt(px * actual_num_buckets) - dx_error_interval, 2) /
-                 actual_num_buckets);
+        0.0,
+        std::pow(std::sqrt(px * actual_num_buckets) - dx_error_interval, 2) /
+            actual_num_buckets);
     double py_lower_bound = std::max(
-        0.0, std::pow(sqrt(py * actual_num_buckets) - dy_error_interval, 2) /
-                 actual_num_buckets);
-    double px_upper_differential_privacy_bound = exp(epsilon) * px_upper_bound;
-    double py_upper_differential_privacy_bound = exp(epsilon) * py_upper_bound;
+        0.0,
+        std::pow(std::sqrt(py * actual_num_buckets) - dy_error_interval, 2) /
+            actual_num_buckets);
+    double px_upper_differential_privacy_bound =
+        std::exp(epsilon) * px_upper_bound;
+    double py_upper_differential_privacy_bound =
+        std::exp(epsilon) * py_upper_bound;
 
-    bool bound_exceeded = (dx_hist.BinCount(i).ValueOrDie() > 0 &&
+    bool bound_exceeded = (dx_hist.BinCountOrDie(i) > 0 &&
                            CheckBoundsAndUpdateMaxViolation(
                                px_lower_bound, py_differential_privacy_bound,
                                py_upper_differential_privacy_bound)) ||
-                          (dy_hist.BinCount(i).ValueOrDie() > 0 &&
+                          (dy_hist.BinCountOrDie(i) > 0 &&
                            CheckBoundsAndUpdateMaxViolation(
                                py_lower_bound, px_differential_privacy_bound,
                                px_upper_differential_privacy_bound));

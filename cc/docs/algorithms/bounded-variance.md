@@ -1,20 +1,16 @@
-
-
-<!-- This file is auto-generated. Do not edit. -->
-
 # Bounded Variance
 
-[`BoundedVariance`](https://github.com/google/differential-privacy/blob/master/cc/algorithms/bounded-variance.h) computes the
+[`BoundedVariance`](https://github.com/google/differential-privacy/blob/main/cc/algorithms/bounded-variance.h) computes the
 variance of values in a dataset, in a differentially private manner.
 
 ## Input & Output
 
-`BoundedVariance` supports `int64` and `double` type input sets. When
+`BoundedVariance` supports `int64`s and `double`s as inputs. When
 successful, the returned [`Output`](../protos.md) message will contain one
-element containing the differentially private variance. When bounds are
+element with the differentially private variance. When bounds are
 inferred, the `Output` additionally contains a `BoundingReport`. The returned
 value is guaranteed to be non-negative, with a maximum possible value of the
-maximum variance (bounded interval squared divided by four).
+maximum variance (length of the bounded interval squared divided by four).
 
 ## Construction
 
@@ -24,7 +20,7 @@ Information on how to construct a `BoundedVariance` is found in the
 construction example.
 
 ```
-util::StatusOr<std::unique_ptr<BoundedVariance<int64>>> bounded_var =
+base::StatusOr<std::unique_ptr<BoundedVariance<int64>>> bounded_var =
             BoundedVariance<int64>::Builder.SetEpsilon(1)
                                            .SetLower(-10)
                                            .SetUpper(10)

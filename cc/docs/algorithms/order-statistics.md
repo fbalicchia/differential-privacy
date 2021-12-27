@@ -1,26 +1,25 @@
-
-
-<!-- This file is auto-generated. Do not edit. -->
-
 # Order Statistics
 
-We support multiple algorithms obtaining
-[order statistics](https://github.com/google/differential-privacy/blob/master/cc/algorithms/order-statistics.h). Order
-statistics are specific quantiles of an input set. The following algorithms are
-supported:
+WARNING: These algorithms are deprecated and may be removed soon. Please use
+[Quantiles](quantiles.md) (which is more accurate) instead.
+
+We have a set of algorithms for calculating
+[order statistics](https://github.com/google/differential-privacy/blob/main/cc/algorithms/order-statistics.h)
+(aka quantiles, percentiles). The following are supported:
 
 *   `Max`
 *   `Min`
 *   `Median`
 *   `Percentile` for percentile `p`.
 
-Notice that the `Percentile` algorithm can be used to find maximum, minimum, or
-median.
+`Max`, `Min`, and `Median` are convenience wrappers around `Percentile`, which
+can be used to calculate any of the other quantities.
 
 ## Input & Output
 
-The order statistics algorithms support any numeric type. `Output`s contains an
-element with a single value when extracting the result.
+The order statistics algorithms support any numeric type. Their `Output`s
+contain an element with a single value. `ConfidenceInterval` and
+`BoundingReport` are not provided.
 
 ## Construction
 
@@ -32,15 +31,12 @@ parameter `percentile`. For example, when constructing the `Percentile`
 algorithm:
 
 ```
-util::StatusOr<std::unique_ptr<Percentile<T>>> percentile =
-   Percentile<T>::Builder.
-                         .SetPercentile(double percentile)
+base::StatusOr<std::unique_ptr<Percentile<T>>> percentile =
+   Percentile<T>::Builder.SetPercentile(double percentile)
                          .Build();
 ```
 
 *   `T`: The input type, for example `double` or `int64`.
-
-    
 *   `double percentile`: This parameter is required for the `Percentile`
     algorithm and cannot be set for the other order statistics algorithms. It is
     the percentile you wish to find.
@@ -53,5 +49,4 @@ its full API.
 ### Result Performance
 
 For order statistics algorithms, calling `Result` has a time complexity of O(n).
-Since all inputs are stored in an internal vector,
-space complexity is O(n).
+Since all inputs are stored in an internal vector, space complexity is O(n).

@@ -16,20 +16,31 @@
 
 #include "animals_and_carrots.h"
 
+#include <algorithm>
 #include <fstream>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include "base/logging.h"
+#include "absl/status/status.h"
+#include "base/statusor.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_split.h"
 #include "algorithms/bounded-mean.h"
 #include "algorithms/bounded-sum.h"
 #include "algorithms/count.h"
-#include "algorithms/order-statistics.h"
+#include "algorithms/quantiles.h"
+#include "proto/data.pb.h"
+#include "base/status_macros.h"
 
 namespace differential_privacy {
 namespace example {
 
 CarrotReporter::CarrotReporter(std::string data_filename, double epsilon)
-    : epsilon_(epsilon) {
+    : total_epsilon_(epsilon), remaining_epsilon_(epsilon) {
   std::ifstream file(data_filename);
   CHECK(file.is_open()) << "could not open file " << data_filename;
   std::string line;
@@ -72,70 +83,71 @@ int CarrotReporter::Max() {
   return max;
 }
 
-double CarrotReporter::PrivacyBudget() { return privacy_budget_; }
+double CarrotReporter::RemainingEpsilon() { return remaining_epsilon_; }
 
-base::StatusOr<Output> CarrotReporter::PrivateSum(double privacy_budget) {
-  if (privacy_budget_ < privacy_budget) {
-    return base::InvalidArgumentError("Not enough privacy budget.");
+base::StatusOr<Output> CarrotReporter::PrivateSum(double epsilon) {
+  if (remaining_epsilon_ < epsilon) {
+    return absl::InvalidArgumentError("Not enough privacy budget.");
   }
-  privacy_budget_ -= privacy_budget;
+  remaining_epsilon_ -= epsilon;
   ASSIGN_OR_RETURN(std::unique_ptr<BoundedSum<int>> sum_algorithm,
                    BoundedSum<int>::Builder()
-                       .SetEpsilon(epsilon_)
+                       .SetEpsilon(epsilon)
                        .SetLower(0)
                        .SetUpper(150)
                        .Build());
   for (const auto& pair : carrots_per_animal_) {
     sum_algorithm->AddEntry(pair.second);
   }
-  return sum_algorithm->PartialResult(privacy_budget);
+  return sum_algorithm->PartialResult();
 }
 
-base::StatusOr<Output> CarrotReporter::PrivateMean(double privacy_budget) {
-  if (privacy_budget_ < privacy_budget) {
-    return base::InvalidArgumentError("Not enough privacy budget.");
+base::StatusOr<Output> CarrotReporter::PrivateMean(double epsilon) {
+  if (remaining_epsilon_ < epsilon) {
+    return absl::InvalidArgumentError("Not enough privacy budget.");
   }
-  privacy_budget_ -= privacy_budget;
+  remaining_epsilon_ -= epsilon;
   ASSIGN_OR_RETURN(std::unique_ptr<BoundedMean<int>> mean_algorithm,
-                   BoundedMean<int>::Builder().SetEpsilon(epsilon_).Build());
+                   BoundedMean<int>::Builder().SetEpsilon(epsilon).Build());
   for (const auto& pair : carrots_per_animal_) {
     mean_algorithm->AddEntry(pair.second);
   }
-  return mean_algorithm->PartialResult(privacy_budget);
+  return mean_algorithm->PartialResult();
 }
 
-base::StatusOr<Output> CarrotReporter::PrivateCountAbove(double privacy_budget,
+base::StatusOr<Output> CarrotReporter::PrivateCountAbove(double epsilon,
                                                          int limit) {
-  if (privacy_budget_ < privacy_budget) {
-    return base::InvalidArgumentError("Not enough privacy budget.");
+  if (remaining_epsilon_ < epsilon) {
+    return absl::InvalidArgumentError("Not enough privacy budget.");
   }
-  privacy_budget_ -= privacy_budget;
+  remaining_epsilon_ -= epsilon;
   ASSIGN_OR_RETURN(std::unique_ptr<Count<std::string>> count_algorithm,
-                   Count<std::string>::Builder().SetEpsilon(epsilon_).Build());
+                   Count<std::string>::Builder().SetEpsilon(epsilon).Build());
 
   for (const auto& pair : carrots_per_animal_) {
     if (pair.second > limit) {
       count_algorithm->AddEntry(pair.first);
     }
   }
-  return count_algorithm->PartialResult(privacy_budget);
+  return count_algorithm->PartialResult();
 }
 
-base::StatusOr<Output> CarrotReporter::PrivateMax(double privacy_budget) {
-  if (privacy_budget_ < privacy_budget) {
-    return base::InvalidArgumentError("Not enough privacy budget.");
+base::StatusOr<Output> CarrotReporter::PrivateMax(double epsilon) {
+  if (remaining_epsilon_ < epsilon) {
+    return absl::InvalidArgumentError("Not enough privacy budget.");
   }
-  privacy_budget_ -= privacy_budget;
-  ASSIGN_OR_RETURN(std::unique_ptr<continuous::Max<int>> max_algorithm,
-                   continuous::Max<int>::Builder()
-                       .SetEpsilon(epsilon_)
+  remaining_epsilon_ -= epsilon;
+  ASSIGN_OR_RETURN(std::unique_ptr<Quantiles<int>> max_algorithm,
+                   Quantiles<int>::Builder()
+                       .SetEpsilon(epsilon)
                        .SetLower(0)
                        .SetUpper(150)
+                       .SetQuantiles({1})
                        .Build());
   for (const auto& pair : carrots_per_animal_) {
     max_algorithm->AddEntry(pair.second);
   }
-  return max_algorithm->PartialResult(privacy_budget);
+  return max_algorithm->PartialResult();
 }
 
 }  // namespace example

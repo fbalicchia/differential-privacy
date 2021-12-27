@@ -52,7 +52,9 @@ class Percentile {
   Percentile() {}
 
   void Add(const T& t) {
-    if (!std::isnan(t)) {
+    // REF:
+    // https://stackoverflow.com/questions/61646166/how-to-resolve-fpclassify-ambiguous-call-to-overloaded-function
+    if (!std::isnan(static_cast<double>(t))) {
       inputs_.push_back(t);
       sorted_ = false;
     }

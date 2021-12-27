@@ -24,8 +24,9 @@ cc_binary(
     deps = [
         ":animals_and_carrots",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
-        "@com_google_cc_differential_privacy//algorithms:util",
+        "@com_google_cc_differential_privacy//base:statusor",
         "@com_google_cc_differential_privacy//proto:util-lib",
         "@com_google_differential_privacy//proto:confidence_interval_cc_proto",
         "@com_google_differential_privacy//proto:data_cc_proto",
@@ -36,14 +37,13 @@ cc_library(
     name = "animals_and_carrots",
     srcs = ["animals_and_carrots.cc"],
     hdrs = ["animals_and_carrots.h"],
-    copts = ["-Wno-sign-compare"],
     data = ["animals_and_carrots.csv"],
     deps = [
         "@com_google_absl//absl/strings",
         "@com_google_cc_differential_privacy//algorithms:bounded-mean",
         "@com_google_cc_differential_privacy//algorithms:bounded-sum",
         "@com_google_cc_differential_privacy//algorithms:count",
-        "@com_google_cc_differential_privacy//algorithms:order-statistics",
+        "@com_google_cc_differential_privacy//algorithms:quantiles",
         "@com_google_cc_differential_privacy//base:statusor",
         "@com_google_differential_privacy//proto:data_cc_proto",
     ],
@@ -52,7 +52,6 @@ cc_library(
 cc_test(
     name = "animals_and_carrots_test",
     srcs = ["animals_and_carrots_test.cc"],
-    copts = ["-Wno-sign-compare"],
     deps = [
         ":animals_and_carrots",
         "@com_google_cc_differential_privacy//base:status",

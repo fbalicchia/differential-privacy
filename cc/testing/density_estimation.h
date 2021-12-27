@@ -20,12 +20,11 @@
 #include <limits>
 #include <numeric>
 
-#include "base/status.h"
+#include "absl/status/status.h"
+#include "base/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
-#include "base/canonical_errors.h"
 #include "base/status.h"
-#include "base/statusor.h"
 
 namespace differential_privacy {
 namespace testing {
@@ -44,8 +43,8 @@ constexpr char kNewLine[] = "\n";
 //   Histogram<int> hist(0, 1, 3);
 //   hist.Add(1);
 //   hist.Add(3);
-//   hist.BinCount(1).ValueOrDie() == 1 // true
-//   hist.BinCount(2).ValueOrDie() == 1 // true
+//   hist.BinCount(1).value() == 1 // true
+//   hist.BinCount(2).value() == 1 // true
 template <typename T>
 class Histogram {
  public:
@@ -55,25 +54,31 @@ class Histogram {
         bin_counts_(std::vector<int>(num_bins, 0)) {}
 
   // Increment the count of the bin into which t falls.
-  base::Status Add(T element) {
+  absl::Status Add(T element) {
     double index = (element - lowest_) / width_;
     if (index < 0) {
-      return base::InvalidArgumentError("The element is out of bounds.");
+      return absl::InvalidArgumentError("The element is out of bounds.");
     }
     if (index >= NumBins() - 1) {
       ++bin_counts_[NumBins() - 1];
     } else {
       ++bin_counts_[static_cast<int>(index)];
     }
-    return base::OkStatus();
+    return absl::OkStatus();
   }
 
   // Number of elements in bin index.
   base::StatusOr<int> BinCount(int index) const {
     if (index < 0 || index >= NumBins()) {
-      return base::InvalidArgumentError("Index is out of bounds.");
+      return absl::InvalidArgumentError("Index is out of bounds.");
     }
     return bin_counts_[index];
+  }
+
+  int BinCountOrDie(int index) const {
+    base::StatusOr<int> count = BinCount(index);
+    CHECK(count.ok()) << count.status();
+    return *count;
   }
 
   // Number of fixed width bins, including the one to +inf.
@@ -157,7 +162,7 @@ class Histogram {
 
   // Get the ith bin count as a std::string with the right format.
   std::string BinCountToString(int i, int max_count_len) const {
-    const std::string raw = absl::StrCat(BinCount(i).ValueOrDie());
+    const std::string raw = absl::StrCat(BinCountOrDie(i));
     if (raw.size() < max_count_len) {
       return absl::StrCat(std::string(max_count_len - raw.size(), ' '), raw);
     }

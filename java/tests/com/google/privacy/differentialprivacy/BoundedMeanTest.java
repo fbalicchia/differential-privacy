@@ -30,6 +30,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.google.common.collect.Range;
+import com.google.privacy.differentialprivacy.proto.SummaryOuterClass.MechanismType;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
@@ -46,8 +47,8 @@ import org.mockito.junit.MockitoRule;
  * Tests the accuracy of {@link BoundedMean}. The test mocks {@link Noise} instance which generates
  * zero noise.
  *
- * Statistical and DP properties of the algorithm are tested in
- * TODO: add a link to the statistical tests.
+ * <p>Statistical and DP properties of the algorithm are tested in {@link
+ * com.google.privacy.differentialprivacy.statistical.BoundedMeanDpTest}.
  */
 @RunWith(JUnit4.class)
 public class BoundedMeanTest {
@@ -57,21 +58,12 @@ public class BoundedMeanTest {
   @Mock private Noise noise;
   private BoundedMean mean;
 
-  private static void mockDoubleNoise(Noise noise, double value) {
-    when(noise.addNoise(anyDouble(), anyInt(), anyDouble(), anyDouble(), anyDouble()))
-        .thenAnswer(invocation -> (double) invocation.getArguments()[0] + value);
-  }
-
-  private static void mockLongNoise(Noise noise, long value) {
-    when(noise.addNoise(anyLong(), anyInt(), anyLong(), anyDouble(), anyDouble()))
-        .thenAnswer(invocation -> (long) invocation.getArguments()[0] + value);
-  }
-
   @Before
   public void setUp() {
+    when(noise.getMechanismType()).thenReturn(MechanismType.GAUSSIAN);
     // Mock the noise mechanism so that it does not add any noise.
-    mockDoubleNoise(noise, 0);
-    mockLongNoise(noise, 0);
+    mockDoubleNoise(0);
+    mockLongNoise(0);
 
     mean =
         BoundedMean.builder()
@@ -96,12 +88,6 @@ public class BoundedMeanTest {
   }
 
   @Test
-  public void addEntries() {
-    mean.addEntries(Arrays.asList(2.0, 4.0, 6.0, 8.0));
-    assertThat(mean.computeResult()).isEqualTo(5.0);
-  }
-
-  @Test
   public void addEntry_Nan_ignored() {
     // Add NaN - no exception is thrown.
     mean.addEntry(NaN);
@@ -111,10 +97,45 @@ public class BoundedMeanTest {
     assertThat(mean.computeResult()).isEqualTo(8.0);
   }
 
-  // An attempt to compute mean several times results in an exception.
+  @Test
+  public void addEntry_calledAfterComputeResult_throwsException() {
+    mean.computeResult();
+    assertThrows(IllegalStateException.class, () -> mean.addEntry(0.0));
+  }
+
+  @Test
+  public void addEntry_calledAfterSerialize_throwsException() {
+    mean.getSerializableSummary();
+    assertThrows(IllegalStateException.class, () -> mean.addEntry(0.0));
+  }
+
+  @Test
+  public void addEntries() {
+    mean.addEntries(Arrays.asList(2.0, 4.0, 6.0, 8.0));
+    assertThat(mean.computeResult()).isEqualTo(5.0);
+  }
+
+  @Test
+  public void addEntries_calledAfterComputeResult_throwsException() {
+    mean.computeResult();
+    assertThrows(IllegalStateException.class, () -> mean.addEntries(Arrays.asList(0.0)));
+  }
+
+  @Test
+  public void addEntries_calledAfterSerialize_throwsException() {
+    mean.getSerializableSummary();
+    assertThrows(IllegalStateException.class, () -> mean.addEntries(Arrays.asList(0.0)));
+  }
+
   @Test
   public void computeResult_multipleCalls_throwsException() {
     mean.computeResult();
+    assertThrows(IllegalStateException.class, () -> mean.computeResult());
+  }
+
+  @Test
+  public void computeResult_calledAfterSerialize_throwsException() {
+    mean.getSerializableSummary();
     assertThrows(IllegalStateException.class, () -> mean.computeResult());
   }
 
@@ -214,9 +235,9 @@ public class BoundedMeanTest {
   @Test
   public void computeResult_addsNoiseToSum() {
     // Mock the noise mechanism so that it adds noise to the sum == 10.0.
-    mockDoubleNoise(noise, 10);
+    mockDoubleNoise(10);
     // Mock the noise mechanism so that it adds noise to the count == 0.
-    mockLongNoise(noise, 0);
+    mockLongNoise(0);
 
     mean =
         BoundedMean.builder()
@@ -241,9 +262,9 @@ public class BoundedMeanTest {
   @Test
   public void computeResult_addsNoiseToCount() {
     // Mock the noise mechanism so that it adds noise to the sum == 0.0.
-    mockDoubleNoise(noise, 0);
+    mockDoubleNoise(0);
     // Mock the noise mechanism so that it adds noise to the count == 2.
-    mockLongNoise(noise, 2);
+    mockLongNoise(2);
 
     mean =
         BoundedMean.builder()
@@ -271,9 +292,9 @@ public class BoundedMeanTest {
     // (i.e., outside of the bounds). If no noise is added then the average will always be within
     // the bounds because the input values are clamped.
     // The noise added to sum is 100.
-    mockDoubleNoise(noise, 100);
+    mockDoubleNoise(100);
     // The noise added to sum is 0.
-    mockLongNoise(noise, 0);
+    mockLongNoise(0);
 
     mean =
         BoundedMean.builder()
@@ -302,9 +323,9 @@ public class BoundedMeanTest {
     // (i.e., outside of the bounds). If no noise is added then the average will always be within
     // the bounds because the input values are clamped.
     // The noise added to sum is 100.
-    mockDoubleNoise(noise, -100);
+    mockDoubleNoise(-100);
     // The noise added to sum is 0.
-    mockLongNoise(noise, 0);
+    mockLongNoise(0);
 
     mean =
         BoundedMean.builder()
@@ -361,12 +382,175 @@ public class BoundedMeanTest {
 
       assertWithMessage(
               "lower = %s\nupper = %s\ndataset = [%s]",
-              lower,
-              upper,
-              dataset.stream().map(x -> Double.toString(x)).collect(joining(",\n")))
+              lower, upper, dataset.stream().map(x -> Double.toString(x)).collect(joining(",\n")))
           .that(mean.computeResult())
           .isIn(Range.closed(lower, upper));
     }
+  }
+
+  @Test
+  public void getSerializableSummary_calledAfterComputeResult_throwsException() {
+    mean.computeResult();
+    assertThrows(IllegalStateException.class, () -> mean.getSerializableSummary());
+  }
+
+  @Test
+  public void getSerializableSummary_multipleCalls_returnsSameSummary() {
+    mean =
+        BoundedMean.builder()
+            .epsilon(EPSILON)
+            .noise(new LaplaceNoise())
+            .maxPartitionsContributed(1)
+            .maxContributionsPerPartition(1)
+            .lower(0.0)
+            .upper(1.0)
+            .build();
+    mean.addEntry(0.5);
+    byte[] summary1 = mean.getSerializableSummary();
+    byte[] summary2 = mean.getSerializableSummary();
+    assertThat(summary1).isEqualTo(summary2);
+  }
+
+  @Test
+  public void mergeWith_basicExample_meansValues() {
+    BoundedMean targetMean = getMeanBuilder().build();
+    BoundedMean sourceMean = getMeanBuilder().build();
+
+    targetMean.addEntry(1);
+    sourceMean.addEntry(9);
+
+    targetMean.mergeWith(sourceMean.getSerializableSummary());
+
+    assertThat(targetMean.computeResult()).isEqualTo(5);
+  }
+
+  @Test
+  public void mergeWith_calledTwice_meansValues() {
+    BoundedMean targetMean = getMeanBuilder().build();
+    BoundedMean sourceMean1 = getMeanBuilder().build();
+    BoundedMean sourceMean2 = getMeanBuilder().build();
+
+    targetMean.addEntry(1);
+    sourceMean1.addEntry(2);
+    sourceMean2.addEntry(3);
+
+    targetMean.mergeWith(sourceMean1.getSerializableSummary());
+    targetMean.mergeWith(sourceMean2.getSerializableSummary());
+
+    assertThat(targetMean.computeResult()).isEqualTo(2);
+  }
+
+  @Test
+  public void mergeWith_epsilonMismatch_throwsException() {
+    BoundedMean targetMean = getMeanBuilder().epsilon(EPSILON).build();
+    BoundedMean sourceMean = getMeanBuilder().epsilon(2 * EPSILON).build();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> targetMean.mergeWith(sourceMean.getSerializableSummary()));
+  }
+
+  @Test
+  public void mergeWith_nullDelta_mergesWithoutException() {
+    BoundedMean targetMean = getMeanBuilder().noise(new LaplaceNoise()).delta(null).build();
+    BoundedMean sourceMean = getMeanBuilder().noise(new LaplaceNoise()).delta(null).build();
+    // No exception should be thrown.
+    targetMean.mergeWith(sourceMean.getSerializableSummary());
+  }
+
+  @Test
+  public void mergeWith_deltaMismatch_throwsException() {
+    BoundedMean targetMean = getMeanBuilder().delta(DELTA).build();
+    BoundedMean sourceMean = getMeanBuilder().delta(2 * DELTA).build();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> targetMean.mergeWith(sourceMean.getSerializableSummary()));
+  }
+
+  @Test
+  public void mergeWith_noiseMismatch_throwsException() {
+    BoundedMean targetMean = getMeanBuilder().noise(new LaplaceNoise()).delta(null).build();
+    BoundedMean sourceMean = getMeanBuilder().noise(new GaussianNoise()).build();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> targetMean.mergeWith(sourceMean.getSerializableSummary()));
+  }
+
+  @Test
+  public void mergeWith_maxPartitionsContributedMismatch_throwsException() {
+    BoundedMean targetMean = getMeanBuilder().maxPartitionsContributed(1).build();
+    BoundedMean sourceMean = getMeanBuilder().maxPartitionsContributed(2).build();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> targetMean.mergeWith(sourceMean.getSerializableSummary()));
+  }
+
+  @Test
+  public void mergeWith_differentMaxContributionsPerPartitionMismatch_throwsException() {
+    BoundedMean targetMean = getMeanBuilder().maxContributionsPerPartition(1).build();
+    BoundedMean sourceMean = getMeanBuilder().maxContributionsPerPartition(2).build();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> targetMean.mergeWith(sourceMean.getSerializableSummary()));
+  }
+
+  @Test
+  public void mergeWith_lowerBoundsMismatch_throwsException() {
+    BoundedMean targetMean = getMeanBuilder().lower(-1).build();
+    BoundedMean sourceMean = getMeanBuilder().lower(-100).build();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> targetMean.mergeWith(sourceMean.getSerializableSummary()));
+  }
+
+  @Test
+  public void mergeWith_upperBoundsMismatch_throwsException() {
+    BoundedMean targetMean = getMeanBuilder().upper(1).build();
+    BoundedMean sourceMean = getMeanBuilder().upper(100).build();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> targetMean.mergeWith(sourceMean.getSerializableSummary()));
+  }
+
+  @Test
+  public void mergeWith_calledAfterComputeResult_throwsException() {
+    BoundedMean targetMean = getMeanBuilder().build();
+    BoundedMean sourceMean = getMeanBuilder().build();
+
+    targetMean.computeResult();
+    byte[] summary = sourceMean.getSerializableSummary();
+    assertThrows(IllegalStateException.class, () -> targetMean.mergeWith(summary));
+  }
+
+  @Test
+  public void mergeWith_calledAfterSerializationOnTargetMean_throwsException() {
+    BoundedMean targetMean = getMeanBuilder().build();
+    BoundedMean sourceMean = getMeanBuilder().build();
+
+    targetMean.getSerializableSummary();
+    byte[] summary = sourceMean.getSerializableSummary();
+    assertThrows(IllegalStateException.class, () -> targetMean.mergeWith(summary));
+  }
+
+  private BoundedMean.Params.Builder getMeanBuilder() {
+    return BoundedMean.builder()
+        .epsilon(EPSILON)
+        .delta(DELTA)
+        .noise(noise)
+        .maxPartitionsContributed(1)
+        // lower, upper and, maxContributionsPerPartition have arbitrarily chosen values.
+        .maxContributionsPerPartition(10)
+        .lower(-10)
+        .upper(10);
+  }
+
+  private void mockDoubleNoise(double value) {
+    when(noise.addNoise(anyDouble(), anyInt(), anyDouble(), anyDouble(), anyDouble()))
+        .thenAnswer(invocation -> (double) invocation.getArguments()[0] + value);
+  }
+
+  private void mockLongNoise(long value) {
+    when(noise.addNoise(anyLong(), anyInt(), anyLong(), anyDouble(), anyDouble()))
+        .thenAnswer(invocation -> (long) invocation.getArguments()[0] + value);
   }
 
   private static int getRandomSign(Random random) {

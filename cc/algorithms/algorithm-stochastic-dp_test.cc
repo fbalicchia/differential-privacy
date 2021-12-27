@@ -44,6 +44,9 @@ constexpr int kNumDatasetsToTest = 500;
 constexpr int kSmallNumDatasetsToTest = 100;
 constexpr int kNumSamplesPerHistogram = 20000;
 
+const double kDefaultOverallEpsilon = std::log(3);
+const double kDefaultBoundsEpsilon = std::log(3) / 2;
+
 template <typename T>
 class StochasticDifferentialPrivacyTest : public ::testing::Test {
  protected:
@@ -64,11 +67,11 @@ TYPED_TEST(StochasticDifferentialPrivacyTest, AllBoundedDpAlgorithms) {
   auto algorithm = typename TypeParam::Builder()
                        .SetLaplaceMechanism(
                            absl::make_unique<SeededLaplaceMechanism::Builder>())
-                       .SetEpsilon(DefaultEpsilon())
+                       .SetEpsilon(std::log(3))
                        .SetLower(sequence->RangeMin())
                        .SetUpper(sequence->RangeMax())
                        .Build()
-                       .ValueOrDie();
+                       .value();
   StochasticTester<double> tester(std::move(algorithm), std::move(sequence),
                                   kSmallNumDatasetsToTest,
                                   kNumSamplesPerHistogram);
@@ -85,11 +88,11 @@ TEST(StochasticDifferentialPrivacyTest, Max) {
   auto algorithm = Max<double>::Builder()
                        .SetLaplaceMechanism(
                            absl::make_unique<SeededLaplaceMechanism::Builder>())
-                       .SetEpsilon(DefaultEpsilon())
+                       .SetEpsilon(std::log(3))
                        .SetLower(lower)
                        .SetUpper(upper)
                        .Build()
-                       .ValueOrDie();
+                       .value();
   StochasticTester<double> tester(std::move(algorithm), std::move(sequence),
                                   kSmallNumDatasetsToTest,
                                   kNumSamplesPerHistogram);
@@ -106,11 +109,11 @@ TEST(StochasticDifferentialPrivacyTest, Min) {
   auto algorithm = Min<double>::Builder()
                        .SetLaplaceMechanism(
                            absl::make_unique<SeededLaplaceMechanism::Builder>())
-                       .SetEpsilon(DefaultEpsilon())
+                       .SetEpsilon(std::log(3))
                        .SetLower(lower)
                        .SetUpper(upper)
                        .Build()
-                       .ValueOrDie();
+                       .value();
   StochasticTester<double> tester(std::move(algorithm), std::move(sequence),
                                   kSmallNumDatasetsToTest, kNumDatasetsToTest);
   EXPECT_TRUE(tester.Run());
@@ -126,11 +129,11 @@ TEST(StochasticDifferentialPrivacyTest, Median) {
   auto algorithm = Median<double>::Builder()
                        .SetLaplaceMechanism(
                            absl::make_unique<SeededLaplaceMechanism::Builder>())
-                       .SetEpsilon(DefaultEpsilon())
+                       .SetEpsilon(std::log(3))
                        .SetLower(lower)
                        .SetUpper(upper)
                        .Build()
-                       .ValueOrDie();
+                       .value();
   StochasticTester<double> tester(std::move(algorithm), std::move(sequence),
                                   kSmallNumDatasetsToTest, kNumDatasetsToTest);
   EXPECT_TRUE(tester.Run());
@@ -148,11 +151,11 @@ TEST(StochasticDifferentialPrivacyTest, Percentile) {
                        .SetLaplaceMechanism(
                            absl::make_unique<SeededLaplaceMechanism::Builder>())
                        .SetPercentile(percentile)
-                       .SetEpsilon(DefaultEpsilon())
+                       .SetEpsilon(std::log(3))
                        .SetLower(lower)
                        .SetUpper(upper)
                        .Build()
-                       .ValueOrDie();
+                       .value();
   StochasticTester<double> tester(std::move(algorithm), std::move(sequence),
                                   kSmallNumDatasetsToTest,
                                   kNumSamplesPerHistogram);
@@ -173,9 +176,9 @@ TEST(StochasticDifferentialPrivacyTest, CountNonBranchingSearch) {
       Count<int64_t>::Builder()
           .SetLaplaceMechanism(
               absl::make_unique<SeededLaplaceMechanism::Builder>())
-          .SetEpsilon(DefaultEpsilon())
+          .SetEpsilon(std::log(3))
           .Build()
-          .ValueOrDie();
+          .value();
   StochasticTester<int64_t> tester(std::move(algorithm), std::move(sequence),
                                  /*num_datasets=*/1, kNumSamplesPerHistogram,
                                  /*disable_search_branching=*/true);
@@ -196,7 +199,7 @@ TEST(StochasticDifferentialPrivacyTest, ApproxBoundsMinimum) {
                        .SetScale(.2)
                        .SetSuccessProbability(.9)
                        .Build()
-                       .ValueOrDie();
+                       .value();
   StochasticTester<double> tester(std::move(algorithm), std::move(sequence),
                                   kNumDatasetsToTest, kNumSamplesPerHistogram);
   EXPECT_TRUE(tester.Run());
@@ -207,33 +210,35 @@ TYPED_TEST(StochasticDifferentialPrivacyTest, AllApproxBoundedDpAlgorithms) {
       testing::DefaultDatasetSize(), true, testing::DefaultDataScale(),
       testing::DefaultDataOffset());
 
-  std::unique_ptr<ApproxBounds<double>> bounds =
+  base::StatusOr<std::unique_ptr<ApproxBounds<double>>> bounds =
       ApproxBounds<double>::Builder()
           .SetLaplaceMechanism(
               absl::make_unique<SeededLaplaceMechanism::Builder>())
-          .SetEpsilon(DefaultEpsilon())
+          .SetEpsilon(kDefaultBoundsEpsilon)
           .SetScale(.2)
           .SetBase(2)
           .SetNumBins(1)
           .SetSuccessProbability(.90)
-          .Build()
-          .ValueOrDie();
+          .Build();
+  ASSERT_TRUE(bounds.ok()) << bounds.status().message();
 
   // The sum mechanism is remade for every run of the algorithm. Thus, we need
   // to ensure an outside generator is passed into the mechanism builder.
   std::seed_seq seed({1, 1, 1, 1, 1});
   std::mt19937 rand_gen(seed);
   auto mech_builder = SeededLaplaceMechanism::Builder().rand_gen(&rand_gen);
-  auto algorithm =
+  base::StatusOr<std::unique_ptr<TypeParam>> algorithm =
       typename TypeParam::Builder()
           .SetLaplaceMechanism(
               absl::make_unique<SeededLaplaceMechanism::Builder>(mech_builder))
-          .SetEpsilon(DefaultEpsilon())
-          .SetApproxBounds(std::move(bounds))
-          .Build()
-          .ValueOrDie();
-  StochasticTester<double> tester(std::move(algorithm), std::move(sequence),
-                                  kNumDatasetsToTest, kNumSamplesPerHistogram);
+          .SetEpsilon(kDefaultOverallEpsilon)
+          .SetApproxBounds(std::move(bounds).value())
+          .Build();
+  ASSERT_TRUE(algorithm.ok()) << algorithm.status().message();
+
+  StochasticTester<double> tester(std::move(algorithm).value(),
+                                  std::move(sequence), kNumDatasetsToTest,
+                                  kNumSamplesPerHistogram);
   EXPECT_TRUE(tester.Run());
 }
 

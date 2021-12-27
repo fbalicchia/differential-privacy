@@ -19,11 +19,15 @@
 #include "base/testing/status_matchers.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "base/statusor.h"
 #include "algorithms/algorithm.h"
 #include "algorithms/approx-bounds.h"
 
 namespace differential_privacy {
 namespace {
+
+using ::testing::HasSubstr;
+using ::differential_privacy::base::testing::StatusIs;
 
 template <typename T>
 class BoundedAlgorithmTest : public testing::Test {};
@@ -41,18 +45,14 @@ class BoundedAlgorithm : public Algorithm<T> {
 
    public:
     // Methods for testing.
-    T Lower() { return BoundedBuilder::lower_.value(); }
-    T Upper() { return BoundedBuilder::upper_.value(); }
-    bool HasLower() { return BoundedBuilder::lower_.has_value(); }
-    bool HasUpper() { return BoundedBuilder::upper_.has_value(); }
-    ApproxBounds<T>* GetApproxBounds() {
-      return BoundedBuilder::approx_bounds_.get();
-    }
+    T Lower() { return BoundedBuilder::GetLower().value(); }
+    T Upper() { return BoundedBuilder::GetUpper().value(); }
+    bool HasLower() { return BoundedBuilder::GetLower().has_value(); }
+    bool HasUpper() { return BoundedBuilder::GetUpper().has_value(); }
 
    private:
-    base::StatusOr<std::unique_ptr<BoundedAlgorithm<T>>> BuildAlgorithm()
+    base::StatusOr<std::unique_ptr<BoundedAlgorithm<T>>> BuildBoundedAlgorithm()
         override {
-      RETURN_IF_ERROR(BoundedBuilder::BoundsSetup());
       return absl::WrapUnique(new BoundedAlgorithm());
     }
   };
@@ -60,13 +60,13 @@ class BoundedAlgorithm : public Algorithm<T> {
   // Trivial implementations of virtual functions.
   void AddEntry(const T& t) override {}
   base::StatusOr<Output> GenerateResult(
-      double /*privacy_budget*/, double /*noise_interval_level*/) override {
+      double /*noise_interval_level*/) override {
     return Output();
   }
   void ResetState() override {}
-  Summary Serialize() override { return Summary(); }
-  base::Status Merge(const Summary& summary) override {
-    return base::OkStatus();
+  Summary Serialize() const override { return Summary(); }
+  absl::Status Merge(const Summary& summary) override {
+    return absl::OkStatus();
   }
   int64_t MemoryUsed() override { return sizeof(BoundedAlgorithm<T>); };
 
@@ -82,25 +82,55 @@ TYPED_TEST(BoundedAlgorithmTest, ManualBoundsTest) {
   EXPECT_EQ(builder.Upper(), 2);
   EXPECT_TRUE(builder.HasLower());
   EXPECT_TRUE(builder.HasUpper());
-  EXPECT_FALSE(builder.GetApproxBounds());
 }
 
-TYPED_TEST(BoundedAlgorithmTest, ApproxBoundsClearsManualBounds) {
-  typename BoundedAlgorithm<TypeParam>::Builder builder;
-  builder.SetLower(1).SetUpper(2).SetApproxBounds(
-      typename ApproxBounds<TypeParam>::Builder().Build().ValueOrDie());
-  EXPECT_OK(builder.Build());
-  EXPECT_FALSE(builder.HasLower());
-  EXPECT_FALSE(builder.HasUpper());
-  EXPECT_TRUE(builder.GetApproxBounds());
-}
+TEST(BoundedAlgorithmTest, InvalidParameters) {
+  typename BoundedAlgorithm<double>::Builder builder;
 
-TYPED_TEST(BoundedAlgorithmTest, AutomaticApproxBounds) {
-  typename BoundedAlgorithm<TypeParam>::Builder builder;
-  EXPECT_OK(builder.Build());
-  EXPECT_FALSE(builder.HasLower());
-  EXPECT_FALSE(builder.HasUpper());
-  EXPECT_TRUE(builder.GetApproxBounds());
+  builder.SetLower(-std::numeric_limits<double>::infinity());
+  builder.SetUpper(0.5);
+  EXPECT_THAT(builder.Build(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Lower bound must be finite")));
+
+  builder.SetLower(-0.5);
+  builder.SetUpper(std::numeric_limits<double>::infinity());
+  EXPECT_THAT(builder.Build(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Upper bound must be finite")));
+
+  builder.SetLower(0.5);
+  builder.SetUpper(-0.5);
+  EXPECT_THAT(
+      builder.Build(),
+      StatusIs(absl::StatusCode::kInvalidArgument,
+               HasSubstr("Lower bound cannot be greater than upper bound.")));
+
+  builder.ClearBounds();
+  builder.SetLower(-0.5);
+  EXPECT_THAT(builder.Build(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Lower and upper bounds must either both be "
+                                 "set or both be unset.")));
+
+  builder.ClearBounds();
+  builder.SetUpper(-0.5);
+  EXPECT_THAT(builder.Build(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Lower and upper bounds must either both be "
+                                 "set or both be unset.")));
+
+  builder.SetLower(std::numeric_limits<double>::quiet_NaN());
+  builder.SetUpper(0.5);
+  EXPECT_THAT(builder.Build(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Lower bound must be a valid numeric value")));
+
+  builder.SetLower(-0.5);
+  builder.SetUpper(std::numeric_limits<double>::quiet_NaN());
+  EXPECT_THAT(builder.Build(),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("Upper bound must be a valid numeric value")));
 }
 
 }  // namespace

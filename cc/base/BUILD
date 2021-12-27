@@ -27,7 +27,6 @@ package(
 cc_library(
     name = "percentile",
     hdrs = ["percentile.h"],
-    copts = ["-Wno-sign-compare"],
     deps = [
         "//proto:util-lib",
         "@com_google_protobuf//:protobuf_lite",
@@ -38,7 +37,6 @@ cc_library(
     name = "logging",
     srcs = ["logging.cc"],
     hdrs = ["logging.h"],
-    copts = ["-Wno-sign-compare"],
     deps = [
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:core_headers",
@@ -49,7 +47,6 @@ cc_library(
 cc_library(
     name = "statusor_internals",
     hdrs = ["statusor_internals.h"],
-    copts = ["-Wno-sign-compare"],
     deps = [
         ":status",
         "@com_google_absl//absl/base:core_headers",
@@ -59,29 +56,16 @@ cc_library(
 
 cc_library(
     name = "status",
-    srcs = ["status.cc"],
     hdrs = [
         "status.h",
         "status_macros.h",
     ],
-    copts = ["-Wno-sign-compare"],
     deps = [
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:node_hash_map",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
-    ],
-)
-
-cc_library(
-    name = "canonical_errors",
-    srcs = ["canonical_errors.cc"],
-    hdrs = ["canonical_errors.h"],
-    copts = ["-Wno-sign-compare"],
-    deps = [
-        ":status",
-        "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/strings",
     ],
 )
 
@@ -89,9 +73,7 @@ cc_library(
     name = "statusor",
     srcs = ["statusor.cc"],
     hdrs = ["statusor.h"],
-    copts = ["-Wno-sign-compare"],
     deps = [
-        ":canonical_errors",
         ":logging",
         ":status",
         ":statusor_internals",
@@ -102,20 +84,9 @@ cc_library(
 cc_test(
     name = "percentile_test",
     srcs = ["percentile_test.cc"],
-    copts = ["-Wno-sign-compare"],
     deps = [
         ":percentile",
-        "@com_google_googletest//:gtest_main",
         "@com_google_differential_privacy//proto:summary_cc_proto",
-    ],
-)
-
-cc_test(
-    name = "status_test",
-    srcs = ["status_test.cc"],
-    copts = ["-Wno-sign-compare"],
-    deps = [
-        ":status",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -123,27 +94,24 @@ cc_test(
 cc_test(
     name = "statusor_test",
     srcs = ["statusor_test.cc"],
-    copts = ["-Wno-sign-compare"],
     deps = [
-        ":canonical_errors",
         ":statusor",
-        "@com_google_googletest//:gtest_main",
-        "@com_google_googletest//:gtest",
         "//base/testing:status_matchers",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
 cc_test(
     name = "status_macros_test",
     srcs = ["status_macros_test.cc"],
-    copts = ["-Wno-sign-compare"],
     deps = [
         ":status",
         ":statusor",
-        "@com_google_googletest//:gtest_main",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
     ],
 )

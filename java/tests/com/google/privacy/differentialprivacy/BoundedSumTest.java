@@ -17,8 +17,8 @@
 package com.google.privacy.differentialprivacy;
 
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.differentialprivacy.SummaryOuterClass.MechanismType.GAUSSIAN;
-import static com.google.differentialprivacy.SummaryOuterClass.MechanismType.LAPLACE;
+import static com.google.privacy.differentialprivacy.proto.SummaryOuterClass.MechanismType.GAUSSIAN;
+import static com.google.privacy.differentialprivacy.proto.SummaryOuterClass.MechanismType.LAPLACE;
 import static java.lang.Double.NaN;
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.anyDouble;
@@ -27,7 +27,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.google.differentialprivacy.SummaryOuterClass.BoundedSumSummary;
+import com.google.privacy.differentialprivacy.proto.SummaryOuterClass.BoundedSumSummary;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.util.Arrays;
 import org.junit.Before;
@@ -43,8 +43,8 @@ import org.mockito.junit.MockitoRule;
  * Tests the accuracy of {@link BoundedSum}. The test mocks {@link Noise} instance which generates
  * zero noise.
  *
- * Statistical and DP properties of the algorithm are tested in
- * TODO: add a link to the statistical tests.
+ * <p>Statistical and DP properties of the algorithm are tested in {@link
+ * com.google.privacy.differentialprivacy.statistical.BoundedSumDpTest}.
  */
 @RunWith(JUnit4.class)
 public class BoundedSumTest {
@@ -101,10 +101,39 @@ public class BoundedSumTest {
     assertThat(sum.computeResult()).isEqualTo(2.0);
   }
 
-  // An attempt to compute the sum several times should result in an exception.
+  @Test
+  public void addEntry_calledAfterComputeResult_throwsException() {
+    sum.computeResult();
+    assertThrows(IllegalStateException.class, () -> sum.addEntry(0.0));
+  }
+
+  @Test
+  public void addEntry_calledAfterSerialize_throwsException() {
+    sum.getSerializableSummary();
+    assertThrows(IllegalStateException.class, () -> sum.addEntry(0.0));
+  }
+
+  @Test
+  public void addEntries_calledAfterComputeResult_throwsException() {
+    sum.computeResult();
+    assertThrows(IllegalStateException.class, () -> sum.addEntries(Arrays.asList(0.0)));
+  }
+
+  @Test
+  public void addEntries_calledAfterSerialize_throwsException() {
+    sum.getSerializableSummary();
+    assertThrows(IllegalStateException.class, () -> sum.addEntries(Arrays.asList(0.0)));
+  }
+
   @Test
   public void computeResult_multipleCalls_throwsException() {
     sum.computeResult();
+    assertThrows(IllegalStateException.class, () -> sum.computeResult());
+  }
+
+  @Test
+  public void computeResult_calledAfterSerialize_throwsException() {
+    sum.getSerializableSummary();
     assertThrows(IllegalStateException.class, () -> sum.computeResult());
   }
 
@@ -257,15 +286,19 @@ public class BoundedSumTest {
   }
 
   @Test
-  public void getSerializableSummary_twoCalls_throwsException() {
-    sum.getSerializableSummary();
-    assertThrows(IllegalStateException.class, () -> sum.getSerializableSummary());
-  }
-
-  @Test
-  public void computeResult_calledAfterSerialize_throwsException() {
-    sum.getSerializableSummary();
-    assertThrows(IllegalStateException.class, () -> sum.computeResult());
+  public void getSerializableSummary_multipleCalls_returnsSameSummary() {
+    sum =
+        BoundedSum.builder()
+            .epsilon(EPSILON)
+            .noise(new LaplaceNoise())
+            .maxPartitionsContributed(1)
+            .lower(0.0)
+            .upper(1.0)
+            .build();
+    sum.addEntry(0.5);
+    byte[] summary1 = sum.getSerializableSummary();
+    byte[] summary2 = sum.getSerializableSummary();
+    assertThat(summary1).isEqualTo(summary2);
   }
 
   @Test
@@ -333,7 +366,7 @@ public class BoundedSumTest {
   }
 
   @Test
-  public void merge_basicExample_sumsValues() {
+  public void mergeWith_basicExample_sumsValues() {
     BoundedSum targetSum = getBoundedSumBuilderWithFields().build();
     BoundedSum sourceSum = getBoundedSumBuilderWithFields().build();
 
@@ -346,7 +379,7 @@ public class BoundedSumTest {
   }
 
   @Test
-  public void merge_calledTwice_sumsValues() {
+  public void mergeWith_calledTwice_sumsValues() {
     BoundedSum targetSum = getBoundedSumBuilderWithFields().build();
     BoundedSum sourceSum1 = getBoundedSumBuilderWithFields().build();
     BoundedSum sourceSum2 = getBoundedSumBuilderWithFields().build();
@@ -362,7 +395,16 @@ public class BoundedSumTest {
   }
 
   @Test
-  public void merge_nullDelta_noException() {
+  public void mergeWith_epsilonMismatch_throwsException() {
+    BoundedSum targetSum = getBoundedSumBuilderWithFields().epsilon(EPSILON).build();
+    BoundedSum sourceSum = getBoundedSumBuilderWithFields().epsilon(2 * EPSILON).build();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> targetSum.mergeWith(sourceSum.getSerializableSummary()));
+  }
+
+  @Test
+  public void mergeWith_nullDelta_mergesWithoutException() {
     BoundedSum targetSum =
         getBoundedSumBuilderWithFields().noise(new LaplaceNoise()).delta(null).build();
     BoundedSum sourceSum =
@@ -372,16 +414,7 @@ public class BoundedSumTest {
   }
 
   @Test
-  public void merge_differentEpsilon_throwsException() {
-    BoundedSum targetSum = getBoundedSumBuilderWithFields().epsilon(EPSILON).build();
-    BoundedSum sourceSum = getBoundedSumBuilderWithFields().epsilon(2 * EPSILON).build();
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> targetSum.mergeWith(sourceSum.getSerializableSummary()));
-  }
-
-  @Test
-  public void merge_differentDelta_throwsException() {
+  public void mergeWith_deltaMismatch_throwsException() {
     BoundedSum targetSum = getBoundedSumBuilderWithFields().delta(DELTA).build();
     BoundedSum sourceSum = getBoundedSumBuilderWithFields().delta(2 * DELTA).build();
     assertThrows(
@@ -390,7 +423,7 @@ public class BoundedSumTest {
   }
 
   @Test
-  public void merge_differentNoise_throwsException() {
+  public void mergeWith_noiseMismatch_throwsException() {
     BoundedSum targetSum =
         getBoundedSumBuilderWithFields().noise(new LaplaceNoise()).delta(null).build();
     BoundedSum sourceSum = getBoundedSumBuilderWithFields().noise(new GaussianNoise()).build();
@@ -400,7 +433,7 @@ public class BoundedSumTest {
   }
 
   @Test
-  public void merge_differentMaxPartitionsContributed_throwsException() {
+  public void mergeWith_maxPartitionsContributedMismatch_throwsException() {
     BoundedSum targetSum = getBoundedSumBuilderWithFields().maxPartitionsContributed(1).build();
     BoundedSum sourceSum = getBoundedSumBuilderWithFields().maxPartitionsContributed(2).build();
     assertThrows(
@@ -409,7 +442,7 @@ public class BoundedSumTest {
   }
 
   @Test
-  public void merge_differentMaxContributionsPerPartition_throwsException() {
+  public void mergeWith_maxContributionsPerPartitionMismatch_throwsException() {
     BoundedSum targetSum = getBoundedSumBuilderWithFields().maxContributionsPerPartition(1).build();
     BoundedSum sourceSum = getBoundedSumBuilderWithFields().maxContributionsPerPartition(2).build();
     assertThrows(
@@ -418,7 +451,7 @@ public class BoundedSumTest {
   }
 
   @Test
-  public void merge_differentLowerBounds_throwsException() {
+  public void mergeWith_lowerBoundsMismatch_throwsException() {
     BoundedSum targetSum = getBoundedSumBuilderWithFields().lower(-1).build();
     BoundedSum sourceSum = getBoundedSumBuilderWithFields().lower(-100).build();
     assertThrows(
@@ -427,7 +460,7 @@ public class BoundedSumTest {
   }
 
   @Test
-  public void merge_differentUpperBounds_throwsException() {
+  public void mergeWith_upperBoundsMismatch_throwsException() {
     BoundedSum targetSum = getBoundedSumBuilderWithFields().upper(1).build();
     BoundedSum sourceSum = getBoundedSumBuilderWithFields().upper(100).build();
     assertThrows(
@@ -436,23 +469,23 @@ public class BoundedSumTest {
   }
 
   @Test
-  public void merge_calledAfterComputeResult_ontargetSum_throwsException() {
+  public void mergeWith_calledAfterComputeResult_throwsException() {
     BoundedSum targetSum = getBoundedSumBuilderWithFields().build();
     BoundedSum sourceSum = getBoundedSumBuilderWithFields().build();
 
     targetSum.computeResult();
-    assertThrows(
-        IllegalStateException.class, () -> targetSum.mergeWith(sourceSum.getSerializableSummary()));
+    byte[] summary = sourceSum.getSerializableSummary();
+    assertThrows(IllegalStateException.class, () -> targetSum.mergeWith(summary));
   }
 
   @Test
-  public void merge_calledAfterComputeResult_onSourceSum_throwsException() {
+  public void mergeWith_calledAfterSerialization_throwsException() {
     BoundedSum targetSum = getBoundedSumBuilderWithFields().build();
     BoundedSum sourceSum = getBoundedSumBuilderWithFields().build();
 
-    sourceSum.computeResult();
-    assertThrows(
-        IllegalStateException.class, () -> targetSum.mergeWith(sourceSum.getSerializableSummary()));
+    targetSum.getSerializableSummary();
+    byte[] summary = sourceSum.getSerializableSummary();
+    assertThrows(IllegalStateException.class, () -> targetSum.mergeWith(summary));
   }
 
   private BoundedSum.Params.Builder getBoundedSumBuilderWithFields() {

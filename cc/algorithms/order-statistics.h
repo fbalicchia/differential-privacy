@@ -18,12 +18,17 @@
 #define DIFFERENTIAL_PRIVACY_ALGORITHMS_ORDER_STATISTICS_H_
 
 #include "base/percentile.h"
-#include "base/status.h"
+#include "absl/base/attributes.h"
+#include "absl/status/status.h"
+#include "base/statusor.h"
 #include "algorithms/algorithm.h"
 #include "algorithms/binary-search.h"
 #include "algorithms/bounded-algorithm.h"
 #include "algorithms/numerical-mechanisms.h"
-#include "base/status.h"
+
+// Old classes for calculating order statistics (aka quantiles, aka
+// percentiles). Deprecated, you should use Quantiles instead as it's more
+// accurate.
 
 namespace differential_privacy {
 namespace continuous {
@@ -38,25 +43,36 @@ class OrderStatisticsBuilder
  public:
   OrderStatisticsBuilder() : BoundedBuilder() {
     // Default search bounds are numeric limits.
-    BoundedBuilder::lower_ = std::numeric_limits<T>::lowest();
-    BoundedBuilder::upper_ = std::numeric_limits<T>::max();
+    BoundedBuilder::SetLower(std::numeric_limits<T>::lowest());
+    BoundedBuilder::SetUpper(std::numeric_limits<T>::max());
   }
 
  protected:
   // Check numeric parameters and construct quantiles and mechanism. Called
   // only at build.
-  base::Status ConstructDependencies() {
-    if (BoundedBuilder::upper_ < BoundedBuilder::lower_) {
-      return base::InvalidArgumentError(
-          "Upper bound cannot be less than lower bound.");
+  absl::Status ConstructDependencies() {
+    std::unique_ptr<NumericalMechanism> has_to_be_laplace;
+    ASSIGN_OR_RETURN(
+        has_to_be_laplace,
+        AlgorithmBuilder::GetMechanismBuilderClone()
+            ->SetEpsilon(AlgorithmBuilder::GetEpsilon().value())
+            .SetL0Sensitivity(
+                AlgorithmBuilder::GetMaxPartitionsContributed().value_or(1))
+            .SetLInfSensitivity(
+                AlgorithmBuilder::GetMaxContributionsPerPartition().value_or(1))
+            .Build());
+
+    // TODO: Remove the following dynamic_cast.
+    mechanism_ = absl::WrapUnique<LaplaceMechanism>(
+        dynamic_cast<LaplaceMechanism*>(has_to_be_laplace.release()));
+
+    if (mechanism_ == nullptr) {
+      return absl::InvalidArgumentError(
+          "Order statistics are only supported for Laplace mechanism.");
     }
-    ASSIGN_OR_RETURN(mechanism_,
-                     AlgorithmBuilder::laplace_mechanism_builder_
-                         ->SetEpsilon(AlgorithmBuilder::epsilon_.value())
-                         .SetSensitivity(1)
-                         .Build());
+
     quantiles_ = absl::make_unique<base::Percentile<T>>();
-    return base::OkStatus();
+    return absl::OkStatus();
   }
 
   // Constructed when processing parameters.
@@ -65,21 +81,23 @@ class OrderStatisticsBuilder
 };
 
 template <typename T>
-class Max : public BinarySearch<T> {
+class ABSL_DEPRECATED("Use Quantiles instead.") Max : public BinarySearch<T> {
  public:
-  class Builder : public OrderStatisticsBuilder<T, Max<T>, Builder> {
+  class ABSL_DEPRECATED("Use Quantiles instead.") Builder
+      : public OrderStatisticsBuilder<T, Max<T>, Builder> {
     using AlgorithmBuilder =
         differential_privacy::AlgorithmBuilder<T, Max<T>, Builder>;
     using BoundedBuilder = BoundedAlgorithmBuilder<T, Max<T>, Builder>;
     using OrderBuilder = OrderStatisticsBuilder<T, Max<T>, Builder>;
 
    private:
-    base::StatusOr<std::unique_ptr<Max<T>>> BuildAlgorithm() override {
+    base::StatusOr<std::unique_ptr<Max<T>>> BuildBoundedAlgorithm() override {
       RETURN_IF_ERROR(OrderBuilder::ConstructDependencies());
-      return absl::WrapUnique(new Max(
-          AlgorithmBuilder::epsilon_.value(), BoundedBuilder::lower_.value(),
-          BoundedBuilder::upper_.value(), std::move(OrderBuilder::mechanism_),
-          std::move(OrderBuilder::quantiles_)));
+      return absl::WrapUnique(new Max(AlgorithmBuilder::GetEpsilon().value(),
+                                      BoundedBuilder::GetLower().value(),
+                                      BoundedBuilder::GetUpper().value(),
+                                      std::move(OrderBuilder::mechanism_),
+                                      std::move(OrderBuilder::quantiles_)));
     }
   };
 
@@ -92,21 +110,23 @@ class Max : public BinarySearch<T> {
 };
 
 template <typename T>
-class Min : public BinarySearch<T> {
+class ABSL_DEPRECATED("Use Quantiles instead.") Min : public BinarySearch<T> {
  public:
-  class Builder : public OrderStatisticsBuilder<T, Min<T>, Builder> {
+  class ABSL_DEPRECATED("Use Quantiles instead.") Builder
+      : public OrderStatisticsBuilder<T, Min<T>, Builder> {
     using AlgorithmBuilder =
         differential_privacy::AlgorithmBuilder<T, Min<T>, Builder>;
     using BoundedBuilder = BoundedAlgorithmBuilder<T, Min<T>, Builder>;
     using OrderBuilder = OrderStatisticsBuilder<T, Min<T>, Builder>;
 
    private:
-    base::StatusOr<std::unique_ptr<Min<T>>> BuildAlgorithm() override {
+    base::StatusOr<std::unique_ptr<Min<T>>> BuildBoundedAlgorithm() override {
       RETURN_IF_ERROR(OrderBuilder::ConstructDependencies());
-      return absl::WrapUnique(new Min(
-          AlgorithmBuilder::epsilon_.value(), BoundedBuilder::lower_.value(),
-          BoundedBuilder::upper_.value(), std::move(OrderBuilder::mechanism_),
-          std::move(OrderBuilder::quantiles_)));
+      return absl::WrapUnique(new Min(AlgorithmBuilder::GetEpsilon().value(),
+                                      BoundedBuilder::GetLower().value(),
+                                      BoundedBuilder::GetUpper().value(),
+                                      std::move(OrderBuilder::mechanism_),
+                                      std::move(OrderBuilder::quantiles_)));
     }
   };
 
@@ -119,21 +139,25 @@ class Min : public BinarySearch<T> {
 };
 
 template <typename T>
-class Median : public BinarySearch<T> {
+class ABSL_DEPRECATED("Use Quantiles instead.") Median
+    : public BinarySearch<T> {
  public:
-  class Builder : public OrderStatisticsBuilder<T, Median<T>, Builder> {
+  class ABSL_DEPRECATED("Use Quantiles instead.") Builder
+      : public OrderStatisticsBuilder<T, Median<T>, Builder> {
     using AlgorithmBuilder =
         differential_privacy::AlgorithmBuilder<T, Median<T>, Builder>;
     using BoundedBuilder = BoundedAlgorithmBuilder<T, Median<T>, Builder>;
     using OrderBuilder = OrderStatisticsBuilder<T, Median<T>, Builder>;
 
    private:
-    base::StatusOr<std::unique_ptr<Median<T>>> BuildAlgorithm() override {
+    base::StatusOr<std::unique_ptr<Median<T>>> BuildBoundedAlgorithm()
+        override {
       RETURN_IF_ERROR(OrderBuilder::ConstructDependencies());
-      return absl::WrapUnique(new Median(
-          AlgorithmBuilder::epsilon_.value(), BoundedBuilder::lower_.value(),
-          BoundedBuilder::upper_.value(), std::move(OrderBuilder::mechanism_),
-          std::move(OrderBuilder::quantiles_)));
+      return absl::WrapUnique(new Median(AlgorithmBuilder::GetEpsilon().value(),
+                                         BoundedBuilder::GetLower().value(),
+                                         BoundedBuilder::GetUpper().value(),
+                                         std::move(OrderBuilder::mechanism_),
+                                         std::move(OrderBuilder::quantiles_)));
     }
   };
 
@@ -146,9 +170,11 @@ class Median : public BinarySearch<T> {
 };
 
 template <typename T>
-class Percentile : public BinarySearch<T> {
+class ABSL_DEPRECATED("Use Quantiles instead.") Percentile
+    : public BinarySearch<T> {
  public:
-  class Builder : public OrderStatisticsBuilder<T, Percentile<T>, Builder> {
+  class ABSL_DEPRECATED("Use Quantiles instead.") Builder
+      : public OrderStatisticsBuilder<T, Percentile<T>, Builder> {
     using AlgorithmBuilder =
         differential_privacy::AlgorithmBuilder<T, Percentile<T>, Builder>;
     using BoundedBuilder = BoundedAlgorithmBuilder<T, Percentile<T>, Builder>;
@@ -161,23 +187,23 @@ class Percentile : public BinarySearch<T> {
     }
 
    private:
-    base::StatusOr<std::unique_ptr<Percentile<T>>> BuildAlgorithm() override {
+    base::StatusOr<std::unique_ptr<Percentile<T>>> BuildBoundedAlgorithm()
+        override {
       RETURN_IF_ERROR(OrderBuilder::ConstructDependencies());
-      if (percentile_ < 0 || percentile_ > 1) {
-        return base::InvalidArgumentError(
-            "Percentile must be between 0 and 1.");
-      }
-      return absl::WrapUnique(new Percentile(
-          percentile_, AlgorithmBuilder::epsilon_.value(),
-          BoundedBuilder::lower_.value(), BoundedBuilder::upper_.value(),
-          std::move(OrderBuilder::mechanism_),
-          std::move(OrderBuilder::quantiles_)));
+      RETURN_IF_ERROR(
+          ValidateIsInInclusiveInterval(percentile_, 0, 1, "Percentile"));
+      return absl::WrapUnique(
+          new Percentile(percentile_, AlgorithmBuilder::GetEpsilon().value(),
+                         BoundedBuilder::GetLower().value(),
+                         BoundedBuilder::GetUpper().value(),
+                         std::move(OrderBuilder::mechanism_),
+                         std::move(OrderBuilder::quantiles_)));
     }
 
     double percentile_;
   };
 
-  double percentile() { return percentile_; }
+  double GetPercentile() const { return percentile_; }
 
  private:
   Percentile(double percentile, double epsilon, T lower, T upper,

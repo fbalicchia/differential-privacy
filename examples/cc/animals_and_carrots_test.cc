@@ -26,7 +26,7 @@ namespace example {
 namespace {
 
 constexpr char kDatafile[] =
-"animals_and_carrots.csv";
+    "animals_and_carrots.csv";
 
 TEST(CarrotReporterTest, TrueStatistics) {
   CarrotReporter reporter(kDatafile, 1);
@@ -38,23 +38,23 @@ TEST(CarrotReporterTest, TrueStatistics) {
 TEST(CarrotReporterTest, TooLittleBudget) {
   CarrotReporter reporter(kDatafile, 1);
   EXPECT_EQ(reporter.PrivateCountAbove(2, 50).status().code(),
-            base::StatusCode::kInvalidArgument);
+            absl::StatusCode::kInvalidArgument);
   EXPECT_EQ(reporter.PrivateMax(2).status().code(),
-            base::StatusCode::kInvalidArgument);
+            absl::StatusCode::kInvalidArgument);
   EXPECT_EQ(reporter.PrivateMean(2).status().code(),
-            base::StatusCode::kInvalidArgument);
+            absl::StatusCode::kInvalidArgument);
   EXPECT_EQ(reporter.PrivateSum(2).status().code(),
-            base::StatusCode::kInvalidArgument);
-  EXPECT_EQ(reporter.PrivacyBudget(), 1.0);
+            absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(reporter.RemainingEpsilon(), 1.0);
 }
 
 TEST(CarrotReporterTest, PrivacyBudget) {
   CarrotReporter reporter(kDatafile, 1);
-  EXPECT_EQ(reporter.PrivacyBudget(), 1.0);
+  EXPECT_EQ(reporter.RemainingEpsilon(), 1.0);
   EXPECT_OK(reporter.PrivateMax(.2));
-  EXPECT_EQ(reporter.PrivacyBudget(), .8);
+  EXPECT_EQ(reporter.RemainingEpsilon(), .8);
   EXPECT_OK(reporter.PrivateMax(.8));
-  EXPECT_EQ(reporter.PrivacyBudget(), 0.0);
+  EXPECT_EQ(reporter.RemainingEpsilon(), 0.0);
 }
 
 }  // namespace

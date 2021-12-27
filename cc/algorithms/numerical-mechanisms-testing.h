@@ -17,14 +17,18 @@
 #ifndef DIFFERENTIAL_PRIVACY_ALGORITHMS_NUMERICAL_MECHANISMS_TESTING_H_
 #define DIFFERENTIAL_PRIVACY_ALGORITHMS_NUMERICAL_MECHANISMS_TESTING_H_
 
+#include <memory>
+#include <optional>
 #include <random>
 
+#include <cstdint>
 #include "gmock/gmock.h"
+#include "absl/memory/memory.h"
 #include "absl/random/random.h"
+#include "base/statusor.h"
 #include "algorithms/distributions.h"
 #include "algorithms/numerical-mechanisms.h"
 #include "proto/confidence-interval.pb.h"
-#include "base/statusor.h"
 
 namespace differential_privacy {
 namespace test_utils {
@@ -38,28 +42,25 @@ class ZeroNoiseMechanism : public LaplaceMechanism {
    public:
     Builder() : LaplaceMechanism::Builder() {}
 
-    base::StatusOr<std::unique_ptr<LaplaceMechanism>> Build() override {
+    base::StatusOr<std::unique_ptr<NumericalMechanism>> Build() override {
       return base::StatusOr<std::unique_ptr<LaplaceMechanism>>(
-          absl::make_unique<ZeroNoiseMechanism>(epsilon_.value_or(1),
-                                               l1_sensitivity_.value_or(1)));
+          absl::make_unique<ZeroNoiseMechanism>(
+              GetEpsilon().value_or(1), GetL1Sensitivity().value_or(1)));
     }
 
-    std::unique_ptr<LaplaceMechanism::Builder> Clone() const override {
-      Builder clone;
-      if (epsilon_.has_value()) {
-        clone.SetEpsilon(epsilon_.value());
-      }
-      if (l1_sensitivity_.has_value()) {
-        clone.SetL1Sensitivity(l1_sensitivity_.value());
-      }
-      return absl::make_unique<Builder>(clone);
+    std::unique_ptr<NumericalMechanismBuilder> Clone() const override {
+      return absl::make_unique<Builder>(*this);
     }
   };
 
   ZeroNoiseMechanism(double epsilon, double sensitivity)
       : LaplaceMechanism(epsilon, sensitivity) {}
 
-  double AddNoise(double result, double privacy_budget) override {
+  double AddDoubleNoise(double result, double privacy_budget) override {
+    return result;
+  }
+
+  int64_t AddInt64Noise(int64_t result, double privacy_budget) override {
     return result;
   }
 
@@ -75,6 +76,19 @@ class ZeroNoiseMechanism : public LaplaceMechanism {
   int64_t MemoryUsed() override { return sizeof(ZeroNoiseMechanism); }
 };
 
+class SeededGeometricDistribution : public internal::GeometricDistribution {
+ public:
+  SeededGeometricDistribution(double lambda, std::mt19937* rand_gen)
+      : internal::GeometricDistribution(lambda), rand_gen_(rand_gen) {}
+
+  double GetUniformDouble() override {
+    return absl::Uniform(*rand_gen_, 0, 1.0);
+  }
+
+ private:
+  std::mt19937* rand_gen_;
+};
+
 // A numerical distribution that generates consistent noise from a pre-seeded
 // RNG, intended to make statistical tests completely reliable. Does not perform
 // snapping. Use only for testing. Not differentially private.
@@ -86,16 +100,19 @@ class SeededLaplaceDistribution : public internal::LaplaceDistribution {
     if (rand_gen) {
       rand_gen_ = rand_gen;
     } else {
-      n_calls_++;
-      std::seed_seq seed({n_calls_});
+      std::seed_seq seed({GetNumInstances()});
       owned_rand_gen_ = std::mt19937(seed);
       rand_gen_ = &owned_rand_gen_;
     }
+    geometric_distro_ = absl::make_unique<SeededGeometricDistribution>(
+        geometric_distro_->Lambda(), rand_gen_);
   }
 
   double GetUniformDouble() override {
     return absl::Uniform(*rand_gen_, 0, 1.0);
   }
+
+  bool GetBoolean() override { return absl::Bernoulli(*rand_gen_, 0.5); }
 
  protected:
   std::mt19937* rand_gen_;
@@ -103,11 +120,13 @@ class SeededLaplaceDistribution : public internal::LaplaceDistribution {
 
  private:
   // Used to ensure that different SeededLaplaceDistribution objects have
-  // different seeds.
-  static int n_calls_;
+  // different seeds. This is *not* thread safe.
+  static int GetNumInstances() {
+    static int num_calls = 0;
+    num_calls++;
+    return num_calls;
+  }
 };
-
-int SeededLaplaceDistribution::n_calls_ = 0;
 
 // A numerical mechanism using a distribution that generates consistent noise
 // from a pre-seeded RNG, intended to make statistical tests completely
@@ -120,22 +139,21 @@ class SeededLaplaceMechanism : public LaplaceMechanism {
    public:
     Builder() : LaplaceMechanism::Builder() {}
 
-    base::StatusOr<std::unique_ptr<LaplaceMechanism>> Build() override {
+    base::StatusOr<std::unique_ptr<NumericalMechanism>> Build() override {
+      double sensitivity;
+      if (GetL1Sensitivity().has_value()) {
+        sensitivity = *GetL1Sensitivity();
+      } else {
+        sensitivity =
+            GetL0Sensitivity().value_or(1) * GetLInfSensitivity().value_or(1);
+      }
       return base::StatusOr<std::unique_ptr<LaplaceMechanism>>(
-          absl::make_unique<SeededLaplaceMechanism>(
-              epsilon_.value_or(1), l1_sensitivity_.value_or(1), rand_gen_));
+          absl::make_unique<SeededLaplaceMechanism>(GetEpsilon().value_or(1),
+                                                    sensitivity, rand_gen_));
     }
 
-    std::unique_ptr<LaplaceMechanism::Builder> Clone() const override {
-      SeededLaplaceMechanism::Builder clone;
-      clone.rand_gen(rand_gen_);
-      if (epsilon_.has_value()) {
-        clone.SetEpsilon(epsilon_.value());
-      }
-      if (l1_sensitivity_.has_value()) {
-        clone.SetL1Sensitivity(l1_sensitivity_.value());
-      }
-      return absl::make_unique<Builder>(clone);
+    std::unique_ptr<NumericalMechanismBuilder> Clone() const override {
+      return absl::make_unique<Builder>(*this);
     }
 
     SeededLaplaceMechanism::Builder& rand_gen(std::mt19937* rand_gen) {
@@ -165,17 +183,19 @@ class MockLaplaceMechanism : public LaplaceMechanism {
   // Builder for MockLaplaceMechanism.
   class Builder : public LaplaceMechanism::Builder {
    public:
-    Builder() : mock_(absl::make_unique<MockLaplaceMechanism>()) {}
+    Builder()
+        : LaplaceMechanism::Builder(),
+          mock_(absl::make_unique<MockLaplaceMechanism>()) {}
 
     // Can only be called once.
-    base::StatusOr<std::unique_ptr<LaplaceMechanism>> Build() override {
+    base::StatusOr<std::unique_ptr<NumericalMechanism>> Build() override {
       return base::StatusOr<std::unique_ptr<LaplaceMechanism>>(
           std::unique_ptr<LaplaceMechanism>(mock_.release()));
     }
 
     MockLaplaceMechanism* mock() { return mock_.get(); }
 
-    std::unique_ptr<LaplaceMechanism::Builder> Clone() const override {
+    std::unique_ptr<NumericalMechanismBuilder> Clone() const override {
       return absl::make_unique<MockLaplaceMechanism::Builder>();
     }
 
@@ -186,11 +206,13 @@ class MockLaplaceMechanism : public LaplaceMechanism {
   MockLaplaceMechanism() : LaplaceMechanism(1, 1) {}
   MockLaplaceMechanism(double epsilon, double sensitivity)
       : LaplaceMechanism(epsilon, sensitivity) {}
-  MOCK_METHOD2_T(AddNoise, double(double result, double privacy_budget));
-  MOCK_METHOD2_T(NoiseConfidenceInterval,
-                 base::StatusOr<ConfidenceInterval>(double confidence_level,
-                                                    double privacy_budget));
-  MOCK_METHOD0_T(MemoryUsed, int64_t());
+  MOCK_METHOD(double, AddDoubleNoise, (double result, double privacy_budget),
+              (override));
+  MOCK_METHOD(int64_t, AddInt64Noise, (int64_t result, double privacy_budget),
+              (override));
+  MOCK_METHOD(base::StatusOr<ConfidenceInterval>, NoiseConfidenceInterval,
+              (double confidence_level, double privacy_budget), (override));
+  MOCK_METHOD(int64_t, MemoryUsed, (), (override));
 };
 
 }  // namespace test_utils

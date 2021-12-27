@@ -9,17 +9,14 @@ aggregate functions. We will refer to them as the anonymous functions.
   *  Source: https://www.postgresql.org/ftp/source/
   *  Instructions: https://www.postgresql.org/docs/9.3/install-short.html
 
-* Set `$PG_DIR` to the directory of your postgres installation. E.g.
+* From the `cc` directory of the differential library repo, run
 
     ```
-    export PG_DIR=/usr/local/pgsql
+    ./postgres/install_extension.sh
     ```
 
-* From the base directory of the differential library repo, run
-
-    ```
-    differential_privacy/postgres/install_extension.sh
-    ```
+  *  Note that this script invokes `sudo install` to copy the compiled extension
+     into the postgres system folders.
 
 * Start the Postgres server.
 
@@ -35,23 +32,19 @@ There are several known setup problems; we list suggested solutions for them
 below. This library was built for Linux and MacOS; there may be errors using
 Windows.
 
-##### Postgres headers not linking
 
-If the postgres headers are not linking correctly when installing the
-extension, you might see an error like the following:
+##### pg_config: command not found
+
+While executing `install_extension.sh`, you may see the following error:
 
 ```
-fatal error: postgres.h: No such file or directory
- #include "postgres.h"
-          ^~~~~~~~~~~~
+postgres/install_extension.sh: line 26: pg_config: command not found
 ```
 
-You may need to update paths in `differential-privacy/postgres/BUILD`
-depending on the system building the binary. Under the `cc_binary` rule for
-`anon_func.so`, in the `copt` field, update the `-isystem` paths to the ones for
-your system that contain the postgres headers, eg,  `k8-fastbuild` may need to
-be changed to `darwin-fastbuild`.
-
+This indicates that Postgres is either incorrectly installed or the pg_config
+utility is not found in your system path. Verify that you've installed Postgres
+according to the installation instructions listed and that pg_config is included
+in your system path and try again.
 
 
 ##### Extension files missing
@@ -110,7 +103,7 @@ anonymous function. In the event that manual bounds are not entered, some
 functions can automatically infer the bounds, provided that there is enough
 input data. If there is not enough data, an error message to that effect will
 be displayed. For more information on automatic bounding, see the [ApproxBounds
-documentation](https://github.com/google/differential-privacy/blob/master/cc/docs/algorithms/approx-bounds.md)
+documentation](https://github.com/google/differential-privacy/blob/main/cc/docs/algorithms/approx-bounds.md)
 
 ### Count
 
@@ -314,7 +307,7 @@ In our simple count example, we used a query containing a single anonymous
 function. For a query with N anonymous function calls, and with a desired
 total privacy parameter of ε, we need to use ε/(N+1) as the privacy parameter
 for each aggregation. This is for the N requested calls plus the additional
-anonymous unique-user count. For instance, consider the following dummy query:
+anonymous unique-user count. For instance, consider the following sample query:
 
 ```
 SELECT COUNT(col1), SUM(col2)

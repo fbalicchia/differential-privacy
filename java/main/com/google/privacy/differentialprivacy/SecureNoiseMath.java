@@ -65,7 +65,7 @@ final class SecureNoiseMath {
    * power of 2. Because {@code granularity} must be a power of 2, the result is exact.
    */
   public static double roundToMultipleOfPowerOfTwo(double x, double granularity) {
-    // y is a power of 2 if and only if it is a positive finite value with a mantissa of 0.
+    // granularity is a power of 2 if and only if it's a positive finite value with a mantissa of 0.
     checkArgument(
         granularity > 0.0
             && Double.isFinite(granularity)
@@ -84,5 +84,48 @@ final class SecureNoiseMath {
       // granularity.
       return x;
     }
+  }
+
+  /** Rounds {@code x} to the closest multiple of {@code granularity}. This operation is exact. */
+  public static long roundToMultiple(long x, long granularity) {
+    checkArgument(granularity > 0, "Granularity must be positive. Provided value: %s", granularity);
+    return ((x / granularity) + Math.round((x % granularity) / ((double) granularity)))
+        * granularity;
+  }
+
+  /**
+   * Computes the smallest double value that is larger than or equal to the provided long value.
+   *
+   * <p>Mapping from long to double for large long values (> 2^53) is inaccurate since they may not
+   * be represented as a double. The default conversion from long to double either rounds up or down
+   * the long value to the nearest representable double. This function ensures that {@code n} <=
+   * (double) {@code nextLargerDouble(long n)}.
+   */
+  public static double nextLargerDouble(long n) {
+    // Large long values n may lie between two representable double values a and b,
+    // i.e., a < n < b, (note that in this case a and b are guaranteed to be integers).
+    // If the standard conversion to double rounds the long value down,
+    // e.g. (double) n = a, the difference a - n will be negative, indicating that the result needs
+    // to be incremented to the next double value b.
+    double result = n;
+    long dif = (long) result - n;
+    return dif >= 0 ? result : Math.nextUp(result);
+  }
+
+  /**
+   * See {@link #nextLargerDouble(long)}.
+   *
+   * <p>As opposed to the latter method, this computes the largest double value that is smaller than
+   * or equal to the provided long value {@code n} >= {@code nextSmallerDouble(long n)}.
+   */
+  public static double nextSmallerDouble(long n) {
+    // Large long values n may lie between two representable double values a and b,
+    // i.e., a < n < b, (note that in this case a and b are guaranteed to be integers).
+    // If the standard conversion to double rounds the long value up, e.g. (double) n = b,
+    // the difference b - n will be positive, indicating that the result needs to be decremented
+    // to the previous double value a.
+    double result = n;
+    long dif = (long) result - n;
+    return dif <= 0 ? result : Math.nextDown(result);
   }
 }

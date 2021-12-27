@@ -20,7 +20,6 @@ package(
 cc_library(
     name = "sequence",
     hdrs = ["sequence.h"],
-    copts = ["-Wno-sign-compare"],
     deps = [
         "//base:logging",
         "@com_google_absl//absl/memory",
@@ -32,41 +31,40 @@ cc_test(
     name = "sequence_test",
     size = "small",
     srcs = ["sequence_test.cc"],
-    copts = ["-Wno-sign-compare"],
     deps = [
         ":sequence",
-        "@com_google_googletest//:gtest_main",
         "//algorithms:util",
         "@com_google_absl//absl/memory",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
 cc_library(
     name = "stochastic_tester",
     hdrs = ["stochastic_tester.h"],
-    copts = ["-Wno-sign-compare"],
     deps = [
         ":density_estimation",
         ":sequence",
-        "//base:logging",
         "//algorithms:algorithm",
         "//algorithms:util",
+        "//base:logging",
         "//proto:util-lib",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/hash",
         "@com_google_absl//absl/strings",
+        "@com_google_cc_differential_privacy//base:statusor",
     ],
 )
 
 cc_library(
     name = "density_estimation",
     hdrs = ["density_estimation.h"],
-    copts = ["-Wno-sign-compare"],
     deps = [
-        "//base:status",
-        "//base:statusor",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_cc_differential_privacy//base:status",
+        "@com_google_cc_differential_privacy//base:statusor",
     ],
 )
 
@@ -75,12 +73,10 @@ cc_test(
     size = "small",
     timeout = "long",
     srcs = ["stochastic_tester_test.cc"],
-    copts = ["-Wno-sign-compare"],
     shard_count = 10,
     deps = [
         ":sequence",
         ":stochastic_tester",
-        "@com_google_googletest//:gtest_main",
         "//algorithms:algorithm",
         "//algorithms:bounded-sum",
         "//algorithms:count",
@@ -88,17 +84,69 @@ cc_test(
         "//algorithms:numerical-mechanisms-testing",
         "//algorithms:util",
         "@com_google_absl//absl/random:distributions",
+        "@com_google_cc_differential_privacy//base:statusor",
+        "@com_google_googletest//:gtest_main",
     ],
 )
 
 cc_test(
     name = "density_estimation_test",
     srcs = ["density_estimation_test.cc"],
-    copts = ["-Wno-sign-compare"],
     deps = [
         ":density_estimation",
-        "//base:status",
         "//base/testing:status_matchers",
+        "@com_google_cc_differential_privacy//base:status",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "statistical_tests_utils",
+    testonly = 1,
+    srcs = ["statistical_tests_utils.cc"],
+    hdrs = ["statistical_tests_utils.h"],
+    deps = [
+        "//algorithms:rand",
+        "//algorithms:util",
+        "//base:logging",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/random:distributions",
+        "@com_google_absl//absl/strings",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "statistical_tests_utils_test",
+    srcs = [
+        "statistical_tests_utils_test.cc",
+    ],
+    deps = [
+        ":statistical_tests_utils",
+        "//algorithms:util",
+        "//base/testing:proto_matchers",
+        "@com_google_differential_privacy//proto/testing:statistical_tests_cc_proto",
+        "@com_google_googletest//:gtest_main",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+cc_test(
+    name = "quantile_tree_dp_tests",
+    timeout = "long",
+    srcs = [
+        "quantile_tree_dp_test.cc",
+    ],
+    data = [
+        "@com_google_differential_privacy//proto/testing:bounded_quantiles_dp_test_cases.textproto",
+    ],
+    # The shard count must match the number of test cases defined in bounded_quantiles_dp_test_cases.textproto
+    shard_count = 39,
+    deps = [
+        ":statistical_tests_utils",
+        "//algorithms:numerical-mechanisms",
+        "//algorithms:quantile-tree",
+        "@com_google_differential_privacy//proto/testing:statistical_tests_cc_proto",
         "@com_google_googletest//:gtest_main",
     ],
 )

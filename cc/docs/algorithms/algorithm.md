@@ -1,10 +1,8 @@
 
-
-<!-- This file is auto-generated. Do not edit. -->
-
 # Algorithm
 
-[`Algorithm`](https://github.com/google/differential-privacy/blob/master/cc/algorithms/algorithm.h) is the base class of all
+[`Algorithm`](https://github.com/google/differential-privacy/blob/main/cc/algorithms/algorithm.h)
+is the base class of all
 differentially private algorithms. Each algorithm can be constructed using the
 builder pattern, which sets its parameters. `Algorithms` are incremental: it's
 possible to insert some data and get a result, then _add more data_ and get a
@@ -20,18 +18,48 @@ starts with a privacy budget of `1`, and reading uses up that budget.
 ## Construction
 
 ```
-util::StatusOr<std::unique_ptr<Algorithm>> algorithm =
+base::StatusOr<std::unique_ptr<Algorithm>> algorithm =
  AlgorithmBuilder.SetEpsilon(double epsilon)
-                 .SetLaplaceMechanism(std::unique_ptr<LaplaceMechanism::Builder> laplace_mechanism_builder)
+                 .SetMaxPartitionsContributedTo(int max_partitions)
+                 .SetMaxContributionsPerPartition(int max_contributions)
+                 .SetLaplaceMechanism(std::unique_ptr<NumericalMechanism::Builder> mechanism_builder)
                  .Build();
 ```
 
 *   `double epsilon`: The `epsilon` differential privacy parameter. A smaller
-    number means more privacy but less accuracy. 
-*   `std::unique_ptr<LaplaceMechanism::Builder> laplace_mechanism_builder`: Used
-    to specify the type of laplace mechanism the algorithm will use to add
-    noise. In most cases they should not be set (and a default LaplaceMechanism
-    will be used), but it can be used to remove or mock noise during testing.
+    number means more privacy but less accuracy.
+*   `int max_partitions`: The number of aggregations, or 'partitions,' that each
+    user is allowed to contribute to. Defaults to 1 if unset. The caller must
+    guarantee that this limit is enforced on the input. The library cannot
+    enforce it because it cannot distinguish between users or aggregations. Note
+    that `Algorithm`s that will be merged together are considered part of the
+    same partition.
+*   `int max_contributions`: The number of pieces of input to this aggregation
+    that can belong to a single user. Defaults to 1 if unset. The caller must
+    guarantee that this limit is enforced on the input. The library cannot
+    enforce it because it does not now which inputs belong to which users. If
+    summaries from multiple `Algorithm`s are merged together, the total number
+    of inputs from a single user across all marged `Algorithm`s must not exceed
+    this limit.
+*   `std::unique_ptr<NumericalMechanism::Builder> mechanism_builder`: Used
+    to specify the type of numerical mechanism the algorithm will use to add
+    noise (e.g. Laplace, Gaussian). In most cases this should not be set (and a
+    default LaplaceMechanism will be used), but it can be used to remove or mock
+    noise during testing.
+
+### Partitions
+Several of the parameters refer to the concept of a partition. We define a
+partition as a portion of the data for which a single statistic will be
+released. This is best explained through examples: if you're counting the number
+of people in each of a set of age buckets, partitions would correspond to age
+buckets. Or if you want to count the number of cars broken down by color, each
+color would be a partition.
+
+We imagine that you will use one or more `Algorithm`s for the data from each
+partition. A single `Algorithm` should not be used for data from more than one
+partition. If multiple `Algorithm`s are used for a single partition, we imagine
+that serialization (described below) will be used to combine their data into a
+single `Algorithm` and produce a single output.
 
 ## Use
 
@@ -39,9 +67,7 @@ util::StatusOr<std::unique_ptr<Algorithm>> algorithm =
 
 These functions add data to the `Algorithm`'s internal pool. For most
 algorithms, this doesn't consume additional space; the space consumed is
-typically constant. The exception is the order
-statistics algorithms: the space consumed is linear on the number of inputs.
-<!--* *--> 
+typically constant.
 
 ```
 void AddEntry(const T& t);
@@ -50,12 +76,6 @@ void AddEntry(const T& t);
 Adds a single element `t` to the `Algorithm`'s pool. The type of `t` should be
 the `Algorithm`'s templated type `T`.
 
-```
-void Reset();
-```
-
-Clears the algorithm's input pool, and sets your remaining privacy budget back
-to `1.0`.
 
 ```
 template <typename Iterator>
@@ -70,21 +90,29 @@ Adds multiple inputs to the algorithm.
 *   `Iterator begin` and `Iterator end`: The begin and end iterators for your
     data. The `Algorithm` will behave like any STL iterator-based algorithm.
 
+```
+void Reset();
+```
+
+Clears the algorithm's input pool, and sets your remaining privacy budget back
+to `1.0`.
+
 ### Serialization
 
-Since `Algorithm`s can hold an internal state as a result of added entries, we
-can serialize the algorithm to a `Summary` proto. A `Summary` proto holds all
-the information needed to reconstruct an `Algorithm` and its internal state. We
-can merge a `Summary` into another `Algorithm` of the same type and that was
-constructed with identical parameters. Merging `Algorithm`s of different types
-or with different parameters doesn't make sense, and will return an error.
+Since `Algorithm`s hold an internal state to represent all entires that have
+been added, we can serialize the algorithm to a `Summary` proto. A `Summary`
+proto holds all the information needed to reconstruct an `Algorithm` and its
+internal state. We can merge a `Summary` into another `Algorithm` of the same
+type that was constructed with identical parameters. Merging `Algorithm`s of
+different types or with different parameters doesn't make sense, and will return
+an error.
 
 ```
 Summary Serialize();
-util::Status Merge(const Summary& summary);
+absl::Status Merge(const Summary& summary);
 ```
 
-Serialization and merging can be used to run these algorithms in a distributed
+Serialization and merging can allow these algorithms to be used in a distributed
 manner. This could be useful for very large input sets, for example.
 
 ### Getting Results
@@ -106,6 +134,6 @@ Add the entries from `begin` to `end`, and then get the result with the full
 remaining privacy budget.
 
 Values are returned from `Result` in an [`Output`](../protos.md) proto. For most
-algorithms, this is a single `int64` or `double` value. Some algorithma contain
+algorithms, this is a single `int64` or `double` value. Some algorithms contain
 additional data about accuracy and algorithm mechanisms. You can use
 [`GetValue<Type>`](../protos.md) to get values out of `Output`s easily.

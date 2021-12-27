@@ -17,13 +17,27 @@
 #ifndef DIFFERENTIAL_PRIVACY_ALGORITHMS_APPROX_BOUNDS_H_
 #define DIFFERENTIAL_PRIVACY_ALGORITHMS_APPROX_BOUNDS_H_
 
-#include <cmath>
-#include <limits>
+#include <stdint.h>
+#include <stdlib.h>
 
+#include <algorithm>
+#include <cmath>
+#include <functional>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+#include <cstdint>
 #include "google/protobuf/any.pb.h"
-#include "base/status.h"
+#include "absl/memory/memory.h"
+#include "absl/status/status.h"
+#include "base/statusor.h"
 #include "algorithms/algorithm.h"
 #include "algorithms/numerical-mechanisms.h"
+#include "algorithms/util.h"
 #include "proto/util.h"
 #include "base/status_macros.h"
 
@@ -51,17 +65,22 @@ namespace differential_privacy {
 //
 // To generate the output, first noise is added to each bin count. Then, the
 // success_probability is used to determine a threshold count. The success
-// probability is the probability that we select a bin that wasn't empty before
-// noise addition. Therefore, increasing success_probability will increase the
-// threshold. Alternatively, the threshold can be passed as a parameter
-// directly.
+// probability is the probability that, given our dataset is empty, all bins
+// have noised counts that are less than the threshold count. Therefore,
+// increasing success_probability will increase the threshold and the
+// probability that bounds are too tight. Alternatively, the threshold can be
+// passed as a parameter directly.
 //
-// We chose the bin that succeeds the threshold count and return its greater
-// boundary as the approx max. Similarly the leftmost bin that succeeds the
-// threshold count is chosen and its smaller boundary is returned as the approx
-// min. If the success_probability is too high it is possible that no bin is
-// greater than the threshold. In this case we return an error status in the
-// output.
+// For the approx upper bound, we choose the rightmost bin that succeeds the
+// threshold count and return its upper boundary. Similarly, for the approx
+// lower bound we choose the leftmost bin that succeeds the threshold count and
+// return its lower boundary. If the success_probability is too high it is
+// possible that no bin is greater than the threshold. In this case, we reduce
+// the success probability (and thereby the threshold) and see whether any bins
+// exceed the new threshold. We repeat this until a bin exceeds the threshold or
+// the success probability becomes small enough that the bounds we would find
+// are likely to be due to noise. If we still have not found bounds, we return
+// an error status in the output.
 //
 // For example, if
 //   scale = 2, base = 1, num_bins = 4, inputs = {0, 0, 0, 0, 1, 3, 7, 8, 8, 8}
@@ -71,137 +90,22 @@ namespace differential_privacy {
 //   (2, 4]: 1
 //   (4, 8]: 4
 // Then if success_probability=.9 and epsilon=1 we will obtain approximately
-// threshold=3.5. Since the count of bin (4, 8] > threshold we return an
-// approx max of 2^3 = 8. Since the count of bin [0,1] > threshold we return an
+// threshold=3.5. Since the count of bin (4, 8] > threshold, we return an
+// approx max of 2^3 = 8. Since the count of bin [0,1] > threshold, we return an
 // approx min of 0.
 template <typename T>
 class ApproxBounds : public Algorithm<T> {
+  static_assert(std::is_arithmetic<T>::value,
+                "ApproxBounds can only be used for arithmetic types");
+
  public:
-  class Builder : public AlgorithmBuilder<T, ApproxBounds<T>, Builder> {
-    using AlgorithmBuilder =
-        differential_privacy::AlgorithmBuilder<T, ApproxBounds<T>, Builder>;
+  // Builder to construct ApproxBounds objects.
+  class Builder;
 
-   public:
-    // Constructor sets default values depending on the input type. Bins are
-    // created to cover entire range of type T.
-    Builder()
-        : AlgorithmBuilder(),
-          base_(2),
-          success_probability_(1 - std::pow(10, -9)) {
-      if (std::is_integral<T>::value) {
-        scale_ = 1.0;
-      } else {
-        scale_ = std::numeric_limits<T>::min();
-      }
-      // Take the subtraction of two logarithms to prevent overflow.
-      num_bins_ = std::ceil((std::log(std::numeric_limits<T>::max()) -
-                             std::log(scale_)) /
-                            std::log(base_)) +
-                  1;
-    }
-
-    Builder& SetNumBins(int64_t num_bins) {
-      num_bins_ = num_bins;
-      return *static_cast<Builder*>(this);
-    }
-
-    Builder& SetScale(double scale) {
-      scale_ = scale;
-      return *static_cast<Builder*>(this);
-    }
-
-    Builder& SetBase(double base) {
-      base_ = base;
-      return *static_cast<Builder*>(this);
-    }
-
-    // Set exactly one of success_probability or k threshold.
-    Builder& SetSuccessProbability(double success_probability) {
-      success_probability_ = success_probability;
-      has_k_ = false;
-      return *static_cast<Builder*>(this);
-    }
-
-    // Set exactly one of success_probability or k threshold.
-    Builder& SetThreshold(double k) {
-      k_ = k;
-      has_k_ = true;
-      return *static_cast<Builder*>(this);
-    }
-
-   private:
-    base::StatusOr<std::unique_ptr<ApproxBounds<T>>> BuildAlgorithm() override {
-      std::unique_ptr<NumericalMechanism> mechanism;
-      ASSIGN_OR_RETURN(mechanism, AlgorithmBuilder::UpdateAndBuildMechanism());
-
-      // Check the validity of the histogram parameters. num_bin and
-      // success_probability restrictions prevent undefined threshold
-      // calculation.
-      if (num_bins_ < 1) {
-        return base::InvalidArgumentError("Must have one or more bins.");
-      }
-      if (scale_ <= 0) {
-        return base::InvalidArgumentError("Scale must be positive.");
-      }
-      if (base_ <= 1) {
-        return base::InvalidArgumentError("Base must be greater than 1.");
-      }
-      if (has_k_) {
-        if (k_ < 0) {
-          return base::InvalidArgumentError("k threshold must be nonnegative.");
-        }
-      } else {
-        if (success_probability_ <= 0 || success_probability_ >= 1) {
-          return base::InvalidArgumentError(
-              "Success percentage must be between 0 and 1.");
-        }
-      }
-
-      if (!has_k_) {
-        // Calculate minimum bin count threshold given success probability.
-        // Given the success probability, find the threshold count needed for a
-        // given bin in order for it to be chosen. Note if probability is too
-        // high, the threshold will be too high for any bin to be chosen; then
-        // we return an error in the output. This is calculated assuming
-        // Laplacian noise is added.
-        k_ = -log(2 - 2 * std::pow(success_probability_,
-                                   1.0 / (2 * num_bins_ - 1))) /
-             AlgorithmBuilder::epsilon_.value();
-      }
-
-      // Create ApproxBounds.
-      return absl::WrapUnique(
-          new ApproxBounds(AlgorithmBuilder::epsilon_.value(), num_bins_,
-                           scale_, base_, k_, has_k_, std::move(mechanism)));
-    }
-
-    // Stores whether threshold k is set.
-    bool has_k_ = false;
-
-    double k_;
-    double scale_;
-    double base_;
-    int64_t num_bins_;
-    double success_probability_;
-  };
-
-  void AddEntry(const T& input) override {
-    if (std::isnan(input)) {
-      return;
-    }
-
-    // Place into correct bin according to most significant bit and sign. Note
-    // that MostSignificantBit returns 0 for 0.
-    int index = MostSignificantBit(input);
-    if (input >= 0) {
-      ++pos_bins_[index];
-    } else {  // value < 0
-      ++neg_bins_[index];
-    }
-  }
+  void AddEntry(const T& input) override { AddMultipleEntries(input, 1); }
 
   // Serialize the positive and negative bin counts.
-  Summary Serialize() override {
+  Summary Serialize() const override {
     ApproxBoundsSummary am_summary;
     *am_summary.mutable_pos_bin_count() = {pos_bins_.begin(), pos_bins_.end()};
     *am_summary.mutable_neg_bin_count() = {neg_bins_.begin(), neg_bins_.end()};
@@ -211,20 +115,20 @@ class ApproxBounds : public Algorithm<T> {
   }
 
   // Retrieve positive and negative bin counts from summary and add them.
-  base::Status Merge(const Summary& summary) override {
+  absl::Status Merge(const Summary& summary) override {
     if (!summary.has_data()) {
-      return base::InvalidArgumentError(
+      return absl::InternalError(
           "Cannot merge summary with no histogram data.");
     }
     ApproxBoundsSummary am_summary;
     if (!summary.data().UnpackTo(&am_summary)) {
-      return base::InvalidArgumentError(
+      return absl::InternalError(
           "Approximate bounds summary unable to be unpacked.");
     }
 
     if (pos_bins_.size() != am_summary.pos_bin_count_size() ||
         neg_bins_.size() != am_summary.neg_bin_count_size()) {
-      return base::InvalidArgumentError(
+      return absl::InternalError(
           "Merged approximate max summary must have the same number of "
           "bin counts as this histogram.");
     }
@@ -234,7 +138,7 @@ class ApproxBounds : public Algorithm<T> {
       pos_bins_[i] += am_summary.pos_bin_count(i);
       neg_bins_[i] += am_summary.neg_bin_count(i);
     }
-    return base::OkStatus();
+    return absl::OkStatus();
   }
 
   int64_t MemoryUsed() override {
@@ -262,6 +166,10 @@ class ApproxBounds : public Algorithm<T> {
       return 0;
     }
 
+    // Clamp infinities to highest and lowest value.
+    value = Clamp(std::numeric_limits<T>::lowest(),
+                  std::numeric_limits<T>::max(), value);
+
     // Sometimes the minimum numeric limit has greater magnitude than the
     // maximum. In this case clamp its magnitude at the maximum numeric limit to
     // find msb. In reality our negative bin will accommodate the value.
@@ -274,7 +182,16 @@ class ApproxBounds : public Algorithm<T> {
 
     // Calculate the most significant bit and clamp to a valid bin index.
     int msb = std::ceil((std::log(abs) - std::log(scale_)) / std::log(base_));
-    return std::max(0, std::min(msb, static_cast<int>(pos_bins_.size() - 1)));
+    int bin_index =
+        std::max(0, std::min(msb, static_cast<int>(pos_bins_.size() - 1)));
+
+    // Floating-point precision errors mean that for some bin boundaries, we'll
+    // end up calculating the larger-magnitude bin rather than the smaller.
+    if ((value > 0 && value <= PosLeftBinBoundary(bin_index)) ||
+        (value < 0 && value >= NegLeftBinBoundary(bin_index))) {
+      return std::max(0, bin_index - 1);
+    }
+    return bin_index;
   }
 
   // Splits the value into the elements of the partials vector, each of which
@@ -299,48 +216,12 @@ class ApproxBounds : public Algorithm<T> {
   template <typename T2>
   void AddToPartials(std::vector<T2>* partials, T value,
                      std::function<T2(T, T)> make_partial) {
-    int msb = MostSignificantBit(value);
-
-    // Each bin of the logarithmic histograms in ApproxBounds can be a candidate
-    // for auto-determined upper and lower bounds. Thus, we store a contribution
-    // of the value from the value for each bin.
-    for (int i = 0; i <= msb; ++i) {
-      // The maximum contribution to the bin is the partial between boundaries.
-      T2 partial = 0;
-      if (value >= 0) {
-        partial = make_partial(PosRightBinBoundary(i), PosLeftBinBoundary(i));
-      } else {
-        partial = make_partial(NegRightBinBoundary(i), NegLeftBinBoundary(i));
-      }
-
-      if (i < msb) {
-        // For indices below the msb, add the maximum contribution to the
-        // partial.
-        (*partials)[i] += partial;
-      } else {
-        // For i = msb, add the remaining contribution, but not more than the
-        // maximum contribution to the partial for this bin. This may occur if
-        // the msb was clamped by the ApproxBounds not having enough bins.
-        T2 remainder;
-        if (value > 0) {
-          remainder = make_partial(value, PosLeftBinBoundary(i));
-        } else {
-          remainder = make_partial(value, NegLeftBinBoundary(i));
-        }
-        if (std::abs(partial) < std::abs(remainder)) {
-          (*partials)[msb] += partial;
-        } else {
-          (*partials)[msb] += remainder;
-        }
-      }
-    }
+    AddMultipleEntriesToPartials<T2>(partials, value, 1, make_partial);
   }
 
-  // Break value into its partial sums and store it into the sums vector. A
-  // specific use case of AddToPartials used in some algorithms.
   template <typename T2>
   void AddToPartialSums(std::vector<T2>* sums, T value) {
-    AddToPartials<T2>(sums, value, [](T val1, T val2) { return val1 - val2; });
+    AddMultipleEntriesToPartialSums<T2>(sums, value, 1);
   }
 
   // Given two vectors of partial values, add the partials in the bins between
@@ -348,10 +229,12 @@ class ApproxBounds : public Algorithm<T> {
   // The value_transform and count parameters are used to calculate the
   // contribution of values clamped below lower or above upper, if applicable.
   template <typename T2>
-  T2 ComputeFromPartials(const std::vector<T2>& pos_partials,
-                         const std::vector<T2>& neg_partials,
-                         std::function<T2(T)> value_transform, T lower, T upper,
-                         size_t count) {
+  base::StatusOr<T2> ComputeFromPartials(const std::vector<T2>& pos_partials,
+                                         const std::vector<T2>& neg_partials,
+                                         std::function<T2(T)> value_transform,
+                                         T lower, T upper, int64_t count) {
+    RETURN_IF_ERROR(ValidateIsNonNegative(count, "Count"));
+
     // Find value by adding the partial values corresponding to bins that are
     // between the lower and upper bound. ApproxBounds will always return a
     // bin boundary as lower and upper bounds.
@@ -402,17 +285,24 @@ class ApproxBounds : public Algorithm<T> {
     base::StatusOr<double> count = NumInputs();
     base::StatusOr<double> count_outside = NumInputsOutside(lower, upper);
     if (count.ok()) {
-      report.set_num_inputs(count.ValueOrDie());
+      report.set_num_inputs(count.value());
     }
     if (count_outside.ok()) {
-      report.set_num_outside(count_outside.ValueOrDie());
+      report.set_num_outside(count_outside.value());
     }
     return report;
   }
 
+  // Return the number of positive bins for testing.
+  int64_t GetNumPosBinsForTesting() { return pos_bins_.size(); }
+
+  // Returns a pointer to the mechanism for testing.  Does not transfer
+  // ownership.
+  NumericalMechanism* GetMechanismForTesting() { return mechanism_.get(); }
+
  protected:
   ApproxBounds(double epsilon, int64_t num_bins, double scale, double base,
-               double k, bool preset_k,
+               double success_probability, bool has_user_set_threshold,
                std::unique_ptr<NumericalMechanism> mechanism)
       : Algorithm<T>(epsilon),
         pos_bins_(num_bins, 0),
@@ -420,8 +310,8 @@ class ApproxBounds : public Algorithm<T> {
         bin_boundaries_(num_bins, 0),
         scale_(scale),
         base_(base),
-        k_(k),
-        preset_k_(preset_k),
+        success_probability_(success_probability),
+        has_user_set_threshold_(has_user_set_threshold),
         mechanism_(std::move(mechanism)) {
     // Cache the bin boundary magnitudes for performance. Note that casting
     // numeric limits lead to inconsistencies.
@@ -439,65 +329,64 @@ class ApproxBounds : public Algorithm<T> {
   // Returns an output containing approximate min as the first element and
   // approximate max as the second element. If not enough inputs exist to pass
   // the threshold, populate the output with an error status.
-  base::StatusOr<Output> GenerateResult(double privacy_budget,
-                                        double noise_interval_level) override {
-    DCHECK_GT(privacy_budget, 0.0)
-        << "Privacy budget should be greater than zero.";
-    if (privacy_budget == 0.0) return Output();
-
-    // If k was not user set, scale it by the privacy_budget to ensure the
-    // correct probability of success.
-    double threshold = k_;
-    if (!preset_k_) {
-      threshold /= privacy_budget;
-    }
-
+  base::StatusOr<Output> GenerateResult(double noise_interval_level) override {
     // Populate noisy versions of the histogram bins.
-    noisy_pos_bins_ = AddNoise(privacy_budget, pos_bins_);
-    noisy_neg_bins_ = AddNoise(privacy_budget, neg_bins_);
+    noisy_pos_bins_ = AddNoise(pos_bins_);
+    noisy_neg_bins_ = AddNoise(neg_bins_);
 
-    Output output;
+    double success_probability = success_probability_;
 
-    // Find first bin above threshold for minimum.
-    for (int i = neg_bins_.size() - 1; i >= 0; --i) {
-      if (noisy_neg_bins_[i] >= threshold) {
-        AddToOutput<T>(&output, NegRightBinBoundary(i));
+    std::optional<Output> output;
+    int bounding_attempts = 0;
+    int max_bounding_attempts = 30;
+    do {
+      double threshold = mechanism_->Quantile(
+          std::pow(success_probability, 1.0 / (2 * pos_bins_.size())));
+
+      output = findBounds(threshold);
+
+      if (has_user_set_threshold_) {
+        // The user asked for a specific threshold, so don't try again with a
+        // looser threshold.
         break;
       }
-    }
-    if (output.elements_size() == 0) {
-      for (int i = 0; i < pos_bins_.size(); ++i) {
-        if (noisy_pos_bins_[i] >= threshold) {
-          AddToOutput<T>(&output, PosLeftBinBoundary(i));
-          break;
-        }
-      }
-    }
 
-    // Find first bin above threshold for maximum.
-    for (int i = pos_bins_.size() - 1; i >= 0; --i) {
-      if (noisy_pos_bins_[i] >= threshold) {
-        AddToOutput<T>(&output, PosRightBinBoundary(i));
-        break;
-      }
-    }
-    if (output.elements_size() < 2) {
-      for (int i = 0; i < neg_bins_.size(); ++i) {
-        if (noisy_neg_bins_[i] >= threshold) {
-          AddToOutput<T>(&output, NegLeftBinBoundary(i));
-          break;
-        }
-      }
-    }
+      double failure_probability = 1 - success_probability;
+      success_probability = 1 - 10 * failure_probability;
+      bounding_attempts++;
+    } while (!output.has_value() &&
+             success_probability > kMinSuccessProbability &&
+             bounding_attempts < max_bounding_attempts);
 
     // Record error status if approx min or max was not found.
-    if (output.elements_size() < 2) {
-      return base::InvalidArgumentError(
+    if (!output.has_value() || output->elements_size() < 2) {
+      return absl::FailedPreconditionError(
           "Bin count threshold was too large to find approximate "
           "bounds. Either run over a larger dataset or decrease "
           "success_probability and try again.");
     }
 
+    return *output;
+  }
+
+  // Finds approximate bounds by comparing noised bin counts to a threshold.
+  // This method does not add any noise (it assumes that noisy_pos_bins_ and
+  // noisy_neg_bins_ have been initialised) so calling this method multiple
+  // times with different thresholds is DP: the noised histogram is itself DP.
+  std::optional<Output> findBounds(double threshold) {
+    std::optional<T> lowerBound = findLowerBound(threshold);
+    if (!lowerBound.has_value()) {
+      return std::nullopt;
+    }
+
+    std::optional<T> upperBound = findUpperBound(threshold);
+    if (!upperBound.has_value()) {
+      return std::nullopt;
+    }
+
+    Output output;
+    AddToOutput(&output, *lowerBound);
+    AddToOutput(&output, *upperBound);
     return output;
   }
 
@@ -521,12 +410,95 @@ class ApproxBounds : public Algorithm<T> {
   T PosRightBinBoundary(int bin_index) { return bin_boundaries_[bin_index]; }
 
  private:
+  // Adds input num_of_entries times to the bins.
+  void AddMultipleEntries(const T& input, int64_t num_of_entries) {
+    // REF:
+    // https://stackoverflow.com/questions/61646166/how-to-resolve-fpclassify-ambiguous-call-to-overloaded-function
+    absl::Status status =
+        ValidateIsPositive(num_of_entries, "Number of entries");
+    if (std::isnan(static_cast<double>(input)) || !status.ok()) {
+      return;
+    }
+
+    // Place into correct bin according to most significant bit and sign. Note
+    // that MostSignificantBit returns 0 for 0.
+    int index = MostSignificantBit(input);
+    if (input >= 0) {
+      pos_bins_[index] += num_of_entries;
+    } else {  // value < 0
+      neg_bins_[index] += num_of_entries;
+    }
+  }
+
+  // Adds value to partials (as described in comment for AddToPartials())
+  // num_of_entries times. This function more efficiently adds multiple entries
+  // at once, instead of using AddToPartials() in a for-loop.
+  template <typename T2>
+  void AddMultipleEntriesToPartials(std::vector<T2>* partials, T value,
+                                    int64_t num_of_entries,
+                                    std::function<T2(T, T)> make_partial) {
+    // REF:
+    // https://stackoverflow.com/questions/61646166/how-to-resolve-fpclassify-ambiguous-call-to-overloaded-function
+    absl::Status status =
+        ValidateIsPositive(num_of_entries, "Number of entries");
+    if (std::isnan(static_cast<double>(value)) || !status.ok()) {
+      return;
+    }
+
+    int msb = MostSignificantBit(value);
+
+    // Each bin of the logarithmic histograms in ApproxBounds can be a candidate
+    // for auto-determined upper and lower bounds. Thus, we store a contribution
+    // of the value from the value for each bin.
+    for (int i = 0; i <= msb; ++i) {
+      // The maximum contribution to the bin is the partial between boundaries.
+      T2 partial = 0;
+      if (value >= 0) {
+        partial = make_partial(PosRightBinBoundary(i), PosLeftBinBoundary(i));
+      } else {
+        partial = make_partial(NegRightBinBoundary(i), NegLeftBinBoundary(i));
+      }
+
+      if (i < msb) {
+        // For indices below the msb, add the maximum contribution
+        // (num_of_entries times) to the partial.
+
+        (*partials)[i] += partial * num_of_entries;
+      } else {
+        // For i = msb, add the remaining contribution (num_of_entries times),
+        // but not more than the maximum contribution to the partial for this
+        // bin. This may occur if the msb was clamped by the ApproxBounds not
+        // having enough bins.
+        T2 remainder;
+        if (value > 0) {
+          remainder = make_partial(value, PosLeftBinBoundary(i));
+        } else {
+          remainder = make_partial(value, NegLeftBinBoundary(i));
+        }
+        if (std::abs(partial) < std::abs(remainder)) {
+          (*partials)[msb] += partial * num_of_entries;
+        } else {
+          (*partials)[msb] += remainder * num_of_entries;
+        }
+      }
+    }
+  }
+
+  // Break value into its partial sums and store it into the sums vector. A
+  // specific use case of AddToPartials used in some algorithms.
+  template <typename T2>
+  void AddMultipleEntriesToPartialSums(std::vector<T2>* sums, T value,
+                                       int64_t num_of_entries) {
+    AddMultipleEntriesToPartials<T2>(
+        sums, value, num_of_entries,
+        [](T val1, T val2) { return val1 - val2; });
+  }
+
   // Add noise to each member of bins and return noisy vector.
-  const std::vector<T> AddNoise(double privacy_budget,
-                                const std::vector<int64_t>& bins) {
+  const std::vector<T> AddNoise(const std::vector<int64_t>& bins) {
     std::vector<T> noisy_bins(bins.size());
     for (int i = 0; i < bins.size(); ++i) {
-      noisy_bins[i] = mechanism_->AddNoise(bins[i], privacy_budget);
+      noisy_bins[i] = mechanism_->AddNoise(bins[i]);
     }
     return noisy_bins;
   }
@@ -553,7 +525,7 @@ class ApproxBounds : public Algorithm<T> {
   base::StatusOr<double> NumInputsOutside(T lower, T upper) {
     // Check that noisy bins have been populated.
     if (noisy_pos_bins_.empty()) {
-      return base::InvalidArgumentError(
+      return absl::InvalidArgumentError(
           "Noisy histogram bins have not been created. Try generating "
           "results first.");
     }
@@ -607,6 +579,48 @@ class ApproxBounds : public Algorithm<T> {
     return NumInputsOutside(0, 0);
   }
 
+  // Friend class for testing only.
+  friend class ApproxBoundsTestPeer;
+
+  // Needed for classes that rely on ApproxBounds::AddMultipleEntries()
+  template <typename T2>
+  friend class BoundedMeanWithApproxBounds;
+  template <typename T2>
+  friend class BoundedVarianceWithApproxBounds;
+
+ private:
+  std::optional<T> findLowerBound(double threshold) {
+    // Find first bin above threshold for minimum.
+    for (int i = neg_bins_.size() - 1; i >= 0; --i) {
+      if (noisy_neg_bins_[i] >= threshold) {
+        return NegRightBinBoundary(i);
+      }
+    }
+    for (int i = 0; i < pos_bins_.size(); ++i) {
+      if (noisy_pos_bins_[i] >= threshold) {
+        return PosLeftBinBoundary(i);
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::optional<T> findUpperBound(double threshold) {
+    // Find first bin above threshold for maximum.
+    for (int i = pos_bins_.size() - 1; i >= 0; --i) {
+      if (noisy_pos_bins_[i] >= threshold) {
+        return PosRightBinBoundary(i);
+      }
+    }
+
+    for (int i = 0; i < neg_bins_.size(); ++i) {
+      if (noisy_neg_bins_[i] >= threshold) {
+        return NegLeftBinBoundary(i);
+      }
+    }
+
+    return std::nullopt;
+  }
+
   // Count the values in each logarithmic bin for positives and negatives.
   std::vector<int64_t> pos_bins_;
   std::vector<int64_t> neg_bins_;
@@ -625,14 +639,176 @@ class ApproxBounds : public Algorithm<T> {
   // Base of the logarithm.
   double base_;
 
-  // The bin count threshold for choosing a minimum / maximum.
-  double k_;
+  // The desired probability that, when the dataset is empty, no bin counts are
+  // above the threshold for determing whether a bin is empty.
+  double success_probability_;
 
-  // Whether k was user-set. If true, then do not scale by privacy budget.
-  bool preset_k_;
+  // The minimum allowed success probability when relaxing the success
+  // probability. If approx bounds fails to find bounds, it will reduce the
+  // success probability and, if the reduced success probability is still
+  // greater than kMinSuccessProbability, attempt to find bounds with the
+  // reduced success probability. Having a minimum success probability ensures
+  // we fail rather than returning bounds that are just due to noised empty
+  // bins.
+  static constexpr double kMinSuccessProbability = 1 - 1e-6;
+
+  // Whether the user chose a specific threshold for determining whether a bin
+  // is empty, rather than using a value computed from success_probability_.
+  bool has_user_set_threshold_;
 
   // Mechanism for adding noise to buckets.
   std::unique_ptr<NumericalMechanism> mechanism_;
+};
+
+template <typename T>
+class ApproxBounds<T>::Builder {
+ public:
+  ApproxBounds<T>::Builder& SetEpsilon(double epsilon) {
+    epsilon_ = epsilon;
+    return *this;
+  }
+
+  // This is just a stub  that will be implemented once we have support for
+  // Gaussian.
+  ApproxBounds<T>::Builder& SetDelta(double delta) { return *this; }
+
+  ApproxBounds<T>::Builder& SetMaxPartitionsContributed(
+      int max_partitions_contributed) {
+    max_partitions_contributed_ = max_partitions_contributed;
+    return *this;
+  }
+
+  ApproxBounds<T>::Builder& SetMaxContributionsPerPartition(
+      int max_contributions_per_partition) {
+    max_contributions_per_partition_ = max_contributions_per_partition;
+    return *this;
+  }
+
+  ApproxBounds<T>::Builder& SetLaplaceMechanism(
+      std::unique_ptr<NumericalMechanismBuilder> builder) {
+    mechanism_builder_ = std::move(builder);
+    return *this;
+  }
+
+  ApproxBounds<T>::Builder& SetNumBins(int64_t num_bins) {
+    num_bins_ = num_bins;
+    return *this;
+  }
+
+  ApproxBounds<T>::Builder& SetScale(double scale) {
+    scale_ = scale;
+    return *this;
+  }
+
+  ApproxBounds<T>::Builder& SetBase(double base) {
+    base_ = base;
+    return *this;
+  }
+
+  // Set exactly one of success_probability or k threshold.
+  ApproxBounds<T>::Builder& SetSuccessProbability(double success_probability) {
+    success_probability_ = success_probability;
+    threshold_.reset();
+    return *this;
+  }
+
+  // Set exactly one of success_probability or k threshold. Not recommended
+  // for use in non-test code: if you know enough about your sample
+  // distribution to choose a value for this parameter, then you probably know
+  // enough to choose sensible bounds for your sample.
+  ABSL_DEPRECATED("Use SetThresholdForTest instead")
+  ApproxBounds<T>::Builder& SetThreshold(double threshold) {
+    return SetThresholdForTest(threshold);
+  }
+
+  // Set exactly one of success_probability or k threshold. Not recommended
+  // for use in non-test code: if you know enough about your sample
+  // distribution to choose a value for this parameter, then you probably know
+  // enough to choose sensible bounds for your sample.
+  ApproxBounds<T>::Builder& SetThresholdForTest(double threshold) {
+    threshold_ = threshold;
+    return *this;
+  }
+
+  base::StatusOr<std::unique_ptr<ApproxBounds<T>>> Build() {
+    if (!epsilon_.has_value()) {
+      epsilon_ = DefaultEpsilon();
+      LOG(WARNING) << "Default epsilon of " << epsilon_.value()
+                   << " is being used. Consider setting your own epsilon based "
+                      "on privacy considerations.";
+    }
+
+    RETURN_IF_ERROR(ValidateEpsilon(epsilon_));
+    RETURN_IF_ERROR(
+        ValidateMaxPartitionsContributed(max_partitions_contributed_));
+    RETURN_IF_ERROR(
+        ValidateMaxContributionsPerPartition(max_contributions_per_partition_));
+
+    // Check the validity of the histogram parameters. num_bin and
+    // success_probability restrictions prevent undefined threshold
+    // calculation.
+    RETURN_IF_ERROR(ValidateIsPositive(num_bins_, "Number of bins"));
+    RETURN_IF_ERROR(ValidateIsFiniteAndPositive(scale_, "Scale"));
+    RETURN_IF_ERROR(ValidateIsFinite(base_, "Base"));
+    RETURN_IF_ERROR(ValidateIsGreaterThanOrEqualTo(base_, 1, "Base"));
+
+    // TODO: Handle case where scale * base^num_bins >
+    // std::numeric_limits<T>::max, even though the ApproxBounds constructor
+    // addresses this.
+    if (threshold_.has_value()) {
+      RETURN_IF_ERROR(ValidateIsFinite(threshold_.value(), "k threshold"));
+      RETURN_IF_ERROR(ValidateIsNonNegative(threshold_.value(), "k threshold"));
+    } else {
+      RETURN_IF_ERROR(ValidateIsInExclusiveInterval(success_probability_, 0, 1,
+                                                    "Success probability"));
+    }
+
+    ASSIGN_OR_RETURN(std::unique_ptr<NumericalMechanism> mechanism,
+                     mechanism_builder_->SetEpsilon(epsilon_.value())
+                         .SetL0Sensitivity(max_partitions_contributed_)
+                         .SetLInfSensitivity(max_contributions_per_partition_)
+                         .Build());
+
+    if (threshold_.has_value()) {
+      // If the user specified a threshold rather than a success probability,
+      // then calculate the success probability that corresponds to the
+      // threshold.
+      success_probability_ =
+          std::pow(mechanism->Cdf(threshold_.value()), 2 * num_bins_);
+    }
+
+    // Create ApproxBounds.
+    return absl::WrapUnique(new ApproxBounds(
+        epsilon_.value(), num_bins_, scale_, base_, success_probability_,
+        threshold_.has_value(), std::move(mechanism)));
+  }
+
+ private:
+  // Default scale depends on the input type T.
+  static double DefaultScaleForT() {
+    if (std::is_integral<T>::value) {
+      return 1.0;
+    } else {
+      return std::numeric_limits<T>::min();
+    }
+  }
+
+  absl::optional<double> epsilon_;
+  int max_partitions_contributed_ = 1;
+  int max_contributions_per_partition_ = 1;
+  std::unique_ptr<NumericalMechanismBuilder> mechanism_builder_ =
+      absl::make_unique<LaplaceMechanism::Builder>();
+
+  absl::optional<double> threshold_;
+  double scale_ = DefaultScaleForT();
+  double base_ = 2.0;
+  double success_probability_ = 1 - std::pow(10, -9);
+
+  // Take the subtraction of two logarithms to prevent overflows.
+  int64_t num_bins_ =
+      std::ceil((std::log(std::numeric_limits<T>::max()) - std::log(scale_)) /
+                std::log(base_)) +
+      1;
 };
 
 }  // namespace differential_privacy

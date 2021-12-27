@@ -18,10 +18,9 @@ package com.google.privacy.differentialprivacy;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
-import static java.lang.Double.POSITIVE_INFINITY;
 import static java.lang.Double.isFinite;
 
-import com.google.differentialprivacy.SummaryOuterClass.MechanismType;
+import com.google.privacy.differentialprivacy.proto.SummaryOuterClass.MechanismType;
 import java.util.Objects;
 import javax.annotation.Nullable;
 
@@ -31,27 +30,42 @@ public class DpPreconditions {
   private DpPreconditions() {}
 
   static void checkEpsilon(double epsilon) {
-    checkArgument(epsilon >= 1.0 / (1L << 50)
-       && epsilon < POSITIVE_INFINITY,
-        "epsilon must be > 0 and < infinity. Provided value: %s", epsilon);
+    double epsilonLowerBound = 1.0 / (1L << 50);
+    checkArgument(
+        Double.isFinite(epsilon) && epsilon >= epsilonLowerBound,
+        "epsilon must be >= %s and < infinity. Provided value: %s",
+        epsilonLowerBound,
+        epsilon);
   }
 
   static void checkNoiseDelta(Double delta, Noise noise) {
-    if (noise instanceof LaplaceNoise) {
+    if (noise.getMechanismType() == MechanismType.LAPLACE) {
       checkArgument(
           delta == null,
           "delta should not be set when Laplace noise is used. Provided value: %s",
           delta);
-    } else {
+    } else if (noise.getMechanismType() == MechanismType.GAUSSIAN) {
       checkNotNull(delta);
-      checkArgument(delta > 0 && delta < 1, "delta must be > 0 and < 1. Provided value: %s", delta);
+      checkDelta(delta);
+      // For unknown noise, delta may or may not be null, but if it is not null it should be between
+      // 0 and 1.
+    } else if (delta != null) {
+      checkArgument(
+          delta >= 0 && delta < 1, "delta must be >= 0 and < 1. Provided value: %s", delta);
     }
+
+  }
+
+  static void checkDelta(double delta) {
+    checkArgument(delta > 0 && delta < 1, "delta must be > 0 and < 1. Provided value: %s", delta);
   }
 
   static void checkSensitivities(int l0Sensitivity, double lInfSensitivity) {
     checkL0Sensitivity(l0Sensitivity);
     checkArgument(
-        lInfSensitivity > 0, "lInfSensitivity must be > 0. Provided value: %s", lInfSensitivity);
+        Double.isFinite(lInfSensitivity) && lInfSensitivity > 0,
+        "lInfSensitivity must be > 0 and finite. Provided value: %s",
+        lInfSensitivity);
   }
 
   static void checkL0Sensitivity(int l0Sensitivity) {
@@ -61,7 +75,9 @@ public class DpPreconditions {
 
   static void checkL1Sensitivity(double l1Sensitivity) {
     checkArgument(
-        l1Sensitivity > 0, "l1Sensitivity must be > 0. Provided value: %s", l1Sensitivity);
+        Double.isFinite(l1Sensitivity) && l1Sensitivity > 0,
+        "l1Sensitivity must be > 0 and finite. Provided value: %s",
+        l1Sensitivity);
   }
 
   static void checkMaxPartitionsContributed(int maxPartitionsContributed) {
@@ -138,5 +154,25 @@ public class DpPreconditions {
   static void checkMergeMechanismTypesAreEqual(MechanismType type1, MechanismType type2) {
     checkArgument(Objects.equals(type1, type2),
         "Failed to merge: unequal mechanism types. type1 = %s, type2 = %s", type1, type2);
+  }
+
+  static void checkAlpha(double alpha) {
+    checkArgument(
+        0 < alpha && alpha < 1,
+        "alpha should be strictly between 0 and 1. Provided value: %s",
+        alpha);
+  }
+
+  static void checkNoiseComputeQuantileArguments(
+      Noise noise,
+      double rank,
+      int l0Sensitivity,
+      double lInfSensitivity,
+      double epsilon,
+      @Nullable Double delta) {
+    checkSensitivities(l0Sensitivity, lInfSensitivity);
+    checkEpsilon(epsilon);
+    checkNoiseDelta(delta, noise);
+    checkArgument(rank > 0 && rank < 1, "rank must be > 0 and < 1. Provided value: %s", rank);
   }
 }

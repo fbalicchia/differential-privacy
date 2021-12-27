@@ -18,13 +18,20 @@
 #define DIFFERENTIAL_PRIVACY_ALGORITHMS_BOUNDED_ALGORITHM_H_
 
 #include <memory>
+#include <optional>
+#include <utility>
 
-#include "base/status.h"
+#include "absl/status/status.h"
+#include "base/statusor.h"
 #include "algorithms/algorithm.h"
 #include "algorithms/approx-bounds.h"
-#include "base/status.h"
+#include "base/status_macros.h"
 
 namespace differential_privacy {
+
+// If the user does not manually specify an ApproxBounds object, we will use
+// this fraction of the total epsilon to calculate them.
+const double kDefaultBoundsBudgetFraction = 0.5;
 
 // BoundedAlgorithmBuilder is used to build algorithms which need lower and
 // upper input bounds to determine sensitivity and/or clamp inputs. It provides
@@ -60,46 +67,63 @@ class BoundedAlgorithmBuilder : public AlgorithmBuilder<T, Algorithm, Builder> {
   Builder& ClearBounds() {
     lower_.reset();
     upper_.reset();
-    approx_bounds_ = nullptr;
-    return *static_cast<Builder*>(this);
-  }
-
-  // Setting ApproxBounds removes manually set bounds. If automatic bounds are
-  // desired, this field is optional.
-  Builder& SetApproxBounds(std::unique_ptr<ApproxBounds<T>> approx_bounds) {
-    ClearBounds();
-    approx_bounds_ = std::move(approx_bounds);
     return *static_cast<Builder*>(this);
   }
 
  protected:
+  // This method needs to be overwritten by childs to build bounded algorithms.
+  virtual base::StatusOr<std::unique_ptr<Algorithm>>
+  BuildBoundedAlgorithm() = 0;
+
   // Returns whether bounds have been set for this builder.
   inline bool BoundsAreSet() {
     return lower_.has_value() && upper_.has_value();
   }
 
-  base::Status BoundsSetup() {
-    // If either bound is not set and we do not have an ApproxBounds,
-    // construct the default one.
-    if (!BoundsAreSet() && !approx_bounds_) {
-      auto mech_builder = AlgorithmBuilder::laplace_mechanism_builder_->Clone();
-      ASSIGN_OR_RETURN(approx_bounds_,
-                       typename ApproxBounds<T>::Builder()
-                           .SetEpsilon(AlgorithmBuilder::epsilon_.value())
-                           .SetLaplaceMechanism(std::move(mech_builder))
-                           .Build());
+  // Returns the epsilon allotted for calculating the aggregation. If bounds
+  // are set manually, or an ApproximateBounds object has been manually
+  // specified, this will be the full epsilon. If an ApproxBounds was created
+  // automatically this will be the full epsilon - epsilon spent on that
+  // ApproxBounds. If called before BoundsSetup this will always return the full
+  // epsilon.
+  absl::optional<double> GetRemainingEpsilon() {
+    if (remaining_epsilon_.has_value()) {
+      return remaining_epsilon_;
     }
-    return base::OkStatus();
+    return AlgorithmBuilder::GetEpsilon();
   }
 
+  absl::optional<T> GetLower() const { return lower_; }
+  absl::optional<T> GetUpper() const { return upper_; }
+
+ private:
   // Bounds are optional and do not need to be set.  If they are not set,
   // automatic bounds will be determined.
   absl::optional<T> lower_;
   absl::optional<T> upper_;
 
-  // Used to automatically determine approximate mimimum and maximum to become
-  // lower and upper bounds, respectively.
-  std::unique_ptr<ApproxBounds<T>> approx_bounds_;
+  // Epsilon left over after creating an ApproxBounds.
+  absl::optional<double> remaining_epsilon_;
+
+  // Common initialization and checks for building bounded algorithms.
+  base::StatusOr<std::unique_ptr<Algorithm>> BuildAlgorithm() final {
+    if (lower_.has_value() != upper_.has_value()) {
+      return absl::InvalidArgumentError(
+          "Lower and upper bounds must either both be set or both be unset.");
+    }
+
+    if (BoundsAreSet()) {
+      RETURN_IF_ERROR(ValidateIsFinite(lower_.value(), "Lower bound"));
+      RETURN_IF_ERROR(ValidateIsFinite(upper_.value(), "Upper bound"));
+
+      if (lower_.value() > upper_.value()) {
+        return absl::InvalidArgumentError(
+            "Lower bound cannot be greater than upper bound.");
+      }
+    }
+
+    return BuildBoundedAlgorithm();
+  }
 };
 
 }  // namespace differential_privacy

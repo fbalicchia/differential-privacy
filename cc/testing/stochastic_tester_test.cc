@@ -21,6 +21,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/random/distributions.h"
+#include "base/statusor.h"
 #include "algorithms/algorithm.h"
 #include "algorithms/bounded-sum.h"
 #include "algorithms/count.h"
@@ -40,18 +41,18 @@ template <typename T,
               nullptr>
 class NonDpSum : public Algorithm<T> {
  public:
-  NonDpSum() : Algorithm<T>(0), result_(0) {}
+  NonDpSum() : Algorithm<T>(1), result_(0) {}
   void AddEntry(const T& t) override { result_ += t; }
 
   base::StatusOr<Output> GenerateResult(
-      double /*privacy_budget*/, double /*noise_interval_level*/) override {
+      double /*noise_interval_level*/) override {
     return MakeOutput<T>(result_);
   }
   void ResetState() override { result_ = 0; }
 
-  Summary Serialize() override { return Summary(); }
-  base::Status Merge(const Summary& summary) override {
-    return base::OkStatus();
+  Summary Serialize() const override { return Summary(); }
+  absl::Status Merge(const Summary& summary) override {
+    return absl::OkStatus();
   }
   int64_t MemoryUsed() override { return sizeof(NonDpSum<T>); };
 
@@ -63,18 +64,18 @@ class NonDpSum : public Algorithm<T> {
 template <typename T>
 class NonDpCount : public Algorithm<T> {
  public:
-  NonDpCount() : Algorithm<T>(0), result_(0) {}
+  NonDpCount() : Algorithm<T>(1), result_(0) {}
   void AddEntry(const T& t) override { ++result_; }
 
   base::StatusOr<Output> GenerateResult(
-      double /*privacy_budget*/, double /*noise_interval_level*/) override {
+      double /*noise_interval_level*/) override {
     return MakeOutput<int64_t>(result_);
   }
   void ResetState() override { result_ = 0; }
 
-  Summary Serialize() override { return Summary(); }
-  base::Status Merge(const Summary& summary) override {
-    return base::OkStatus();
+  Summary Serialize() const override { return Summary(); }
+  absl::Status Merge(const Summary& summary) override {
+    return absl::OkStatus();
   }
   int64_t MemoryUsed() override { return sizeof(NonDpCount<T>); };
 
@@ -89,13 +90,16 @@ template <typename T,
           typename std::enable_if<std::is_integral<T>::value ||
                                   std::is_floating_point<T>::value>::type* =
               nullptr>
-class BoundedSumWithInsufficientNoise : public BoundedSum<T> {
+class BoundedSumWithInsufficientNoise : public BoundedSumWithFixedBounds<T> {
  public:
   BoundedSumWithInsufficientNoise(
-      double epsilon, T lower, T upper,
-      std::unique_ptr<LaplaceMechanism::Builder> builder)
-      : BoundedSum<T>(epsilon, lower, upper, std::move(builder), nullptr,
-                      nullptr) {}
+      const double epsilon, const double delta, const T lower, const T upper,
+      std::unique_ptr<NumericalMechanismBuilder> mechanism_builder)
+      : BoundedSumWithFixedBounds<T>(
+            epsilon, 0, lower, upper,
+            BoundedSum<T>::BuildMechanism(std::move(mechanism_builder), epsilon,
+                                          delta, 1, 1, lower, upper)
+                .value()) {}
   double GetEpsilon() const override { return Algorithm<T>::GetEpsilon() / 2; }
 };
 
@@ -104,42 +108,38 @@ template <typename T,
           typename std::enable_if<std::is_integral<T>::value ||
                                   std::is_floating_point<T>::value>::type* =
               nullptr>
-class BoundedSumWithError : public BoundedSum<T> {
+class BoundedSumWithError : public BoundedSumWithFixedBounds<T> {
  public:
-  BoundedSumWithError(double epsilon, T lower, T upper,
-                      std::unique_ptr<LaplaceMechanism::Builder> builder)
-      : BoundedSum<T>(epsilon, lower, upper, builder->Clone(), nullptr,
-                      nullptr),
-        mechanism_(builder->Build().ValueOrDie()) {}
+  BoundedSumWithError(
+      const double epsilon, const double delta, const T lower, const T upper,
+      std::unique_ptr<NumericalMechanismBuilder> mechanism_builder)
+      : BoundedSumWithFixedBounds<T>(
+            epsilon, delta, lower, upper,
+            BoundedSum<T>::BuildMechanism(mechanism_builder->Clone(), epsilon,
+                                          delta, 1, 1, lower, upper)
+                .value()) {}
 
-  base::StatusOr<Output> GenerateResult(double privacy_budget,
-                                        double noise_interval_level) override {
-    if (mechanism_->GetUniformDouble() < 0.25) {
-      return base::InvalidArgumentError("BoundedSumWithError returns error.");
+  base::StatusOr<Output> GenerateResult(double noise_interval_level) override {
+    if (UniformDouble() < 0.25) {
+      return absl::InvalidArgumentError("BoundedSumWithError returns error.");
     }
-    return BoundedSum<T>::GenerateResult(privacy_budget, noise_interval_level);
+    return BoundedSumWithFixedBounds<T>::GenerateResult(noise_interval_level);
   }
-
- private:
-  std::unique_ptr<LaplaceMechanism> mechanism_;
 };
 
 // Count but returns error without dp for some results.
 template <typename T>
 class CountNoDpError : public Count<T> {
  public:
-  explicit CountNoDpError(double epsilon)
-      : Count<T>(epsilon, LaplaceMechanism::Builder()
-                              .SetEpsilon(epsilon)
-                              .Build()
-                              .ValueOrDie()) {}
+  explicit CountNoDpError(double epsilon,
+                          std::unique_ptr<NumericalMechanism> laplace_mechanism)
+      : Count<T>(epsilon, 0, std::move(laplace_mechanism)) {}
 
-  base::StatusOr<Output> GenerateResult(double privacy_budget,
-                                        double noise_interval_level) override {
-    if (Count<T>::count_ == 0) {
-      return base::InvalidArgumentError("CountNoDpError returns error.");
+  base::StatusOr<Output> GenerateResult(double noise_interval_level) override {
+    if (Count<T>::GetCount() == 0) {
+      return absl::InvalidArgumentError("CountNoDpError returns error.");
     }
-    return Count<T>::GenerateResult(privacy_budget, noise_interval_level);
+    return Count<T>::GenerateResult(noise_interval_level);
   }
 };
 
@@ -150,18 +150,18 @@ template <typename T,
               nullptr>
 class AlwaysError : public Algorithm<T> {
  public:
-  AlwaysError() : Algorithm<T>(0), result_(0) {}
+  AlwaysError() : Algorithm<T>(1), result_(0) {}
   void AddEntry(const T& t) override {}
 
   base::StatusOr<Output> GenerateResult(
-      double /*privacy_budget*/, double /*noise_interval_level*/) override {
-    return base::InvalidArgumentError("AlwaysError returns error.");
+      double /*noise_interval_level*/) override {
+    return absl::InvalidArgumentError("AlwaysError returns error.");
   }
   void ResetState() override {}
 
-  Summary Serialize() override { return Summary(); }
-  base::Status Merge(const Summary& summary) override {
-    return base::OkStatus();
+  Summary Serialize() const override { return Summary(); }
+  absl::Status Merge(const Summary& summary) override {
+    return absl::OkStatus();
   }
   int64_t MemoryUsed() override { return sizeof(AlwaysError<T>); };
 
@@ -173,16 +173,16 @@ TEST(StochasticTesterTest, SingleDatasetBoundedSumTest) {
   auto sequence = absl::make_unique<HaltonSequence<double>>(
       DefaultDatasetSize(), true /* sorted_only */, DefaultDataScale(),
       DefaultDataOffset());
-  auto algorithm =
+  base::StatusOr<std::unique_ptr<BoundedSum<double>>> algorithm =
       BoundedSum<double>::Builder()
           .SetLaplaceMechanism(
               absl::make_unique<test_utils::SeededLaplaceMechanism::Builder>())
-          .SetEpsilon(DefaultEpsilon())
+          .SetEpsilon(std::log(3))
           .SetLower(sequence->RangeMin())
           .SetUpper(sequence->RangeMax())
-          .Build()
-          .ValueOrDie();
-  StochasticTester<double> tester(std::move(algorithm), std::move(sequence),
+          .Build();
+  ASSERT_TRUE(algorithm.ok());
+  StochasticTester<double> tester(std::move(*algorithm), std::move(sequence),
                                   /*num_datasets=*/1,
                                   DefaultNumSamplesPerHistogram());
   EXPECT_TRUE(tester.Run());
@@ -199,18 +199,34 @@ TEST(StochasticTesterTest, SingleDatasetNonDpSumTest) {
   EXPECT_FALSE(tester.Run());
 }
 
-TEST(StochasticTesterTest, SingleDatasetCountTest) {
-  std::vector<std::vector<double>> datasets({{1.0, 2.0, 3.0}});
+TEST(StochasticTesterTest, EmptySamplesCountTest) {
+  std::vector<std::vector<double>> datasets({{1.0}});
   auto sequence = absl::make_unique<StoredSequence<double>>(datasets);
-  std::unique_ptr<Count<double>> algorithm =
+  base::StatusOr<std::unique_ptr<Count<double>>> algorithm =
       Count<double>::Builder()
           .SetLaplaceMechanism(
               absl::make_unique<test_utils::SeededLaplaceMechanism::Builder>())
-          .SetEpsilon(DefaultEpsilon())
-          .Build()
-          .ValueOrDie();
+          .SetEpsilon(std::log(3))
+          .Build();
+  ASSERT_TRUE(algorithm.ok());
   StochasticTester<double, int64_t> tester(
-      std::move(algorithm), std::move(sequence),
+      std::move(*algorithm), std::move(sequence),
+      /*num_datasets=*/1, /*num_samples_per_histogram=*/0);
+  EXPECT_TRUE(tester.Run());
+}
+
+TEST(StochasticTesterTest, SingleDatasetCountTest) {
+  std::vector<std::vector<double>> datasets({{1.0, 2.0, 3.0}});
+  auto sequence = absl::make_unique<StoredSequence<double>>(datasets);
+  base::StatusOr<std::unique_ptr<Count<double>>> algorithm =
+      Count<double>::Builder()
+          .SetLaplaceMechanism(
+              absl::make_unique<test_utils::SeededLaplaceMechanism::Builder>())
+          .SetEpsilon(std::log(3))
+          .Build();
+  ASSERT_TRUE(algorithm.ok());
+  StochasticTester<double, int64_t> tester(
+      std::move(*algorithm), std::move(sequence),
       /*num_datasets=*/1, DefaultNumSamplesPerHistogram());
   EXPECT_TRUE(tester.Run());
 }
@@ -228,15 +244,15 @@ TEST(StochasticTesterTest, SingleDatasetNonDpCountTest) {
 TEST(StochasticTesterTest, SingleDatasetCountNoBranchingTest) {
   std::vector<std::vector<double>> datasets({{1.0, 2.0, 3.0}});
   auto sequence = absl::make_unique<StoredSequence<double>>(datasets);
-  std::unique_ptr<Count<double>> algorithm =
+  base::StatusOr<std::unique_ptr<Count<double>>> algorithm =
       Count<double>::Builder()
           .SetLaplaceMechanism(
               absl::make_unique<test_utils::SeededLaplaceMechanism::Builder>())
-          .SetEpsilon(DefaultEpsilon())
-          .Build()
-          .ValueOrDie();
+          .SetEpsilon(std::log(3))
+          .Build();
+  ASSERT_TRUE(algorithm.ok());
   StochasticTester<double, int64_t> tester(
-      std::move(algorithm), std::move(sequence),
+      std::move(*algorithm), std::move(sequence),
       /*num_datasets=*/1, DefaultNumSamplesPerHistogram(),
       /*disable_search_branching=*/true);
   EXPECT_TRUE(tester.Run());
@@ -257,16 +273,16 @@ TEST(StochasticTesterTest, MultipleDatasetBoundedSumTest) {
   auto sequence = absl::make_unique<HaltonSequence<double>>(
       DefaultDatasetSize(), /*sorted_only=*/true, DefaultDataScale(),
       DefaultDataOffset());
-  auto algorithm =
+  base::StatusOr<std::unique_ptr<BoundedSum<double>>> algorithm =
       BoundedSum<double>::Builder()
           .SetLaplaceMechanism(
               absl::make_unique<test_utils::SeededLaplaceMechanism::Builder>())
-          .SetEpsilon(DefaultEpsilon())
+          .SetEpsilon(std::log(3))
           .SetLower(sequence->RangeMin())
           .SetUpper(sequence->RangeMax())
-          .Build()
-          .ValueOrDie();
-  StochasticTester<double, int64_t> tester(std::move(algorithm),
+          .Build();
+  ASSERT_TRUE(algorithm.ok());
+  StochasticTester<double, int64_t> tester(std::move(*algorithm),
                                          std::move(sequence));
   EXPECT_TRUE(tester.Run());
 }
@@ -275,9 +291,11 @@ TEST(StochasticTesterTest, MultipleDatasetBoundedSumWithInsufficientNoiseTest) {
   auto sequence = absl::make_unique<HaltonSequence<double>>(
       DefaultDatasetSize(), /*sorted_only=*/true, DefaultDataScale(),
       DefaultDataOffset());
-  auto algorithm = absl::make_unique<BoundedSumWithInsufficientNoise<double>>(
-      DefaultEpsilon(), sequence->RangeMin(), sequence->RangeMax(),
-      absl::make_unique<test_utils::SeededLaplaceMechanism::Builder>());
+  auto mechanism_builder =
+      std::make_unique<test_utils::SeededLaplaceMechanism::Builder>();
+  auto algorithm = std::make_unique<BoundedSumWithInsufficientNoise<double>>(
+      std::log(3), 0, sequence->RangeMin(), sequence->RangeMax(),
+      std::move(mechanism_builder));
   StochasticTester<double> tester(std::move(algorithm), std::move(sequence));
   EXPECT_FALSE(tester.Run());
 }
@@ -286,19 +304,25 @@ TEST(StochasticTesterTest, ReplaceErrorWithValue) {
   auto sequence = absl::make_unique<HaltonSequence<double>>(
       DefaultDatasetSize(), /*sorted_only=*/true, DefaultDataScale(),
       DefaultDataOffset());
-  auto algorithm = absl::make_unique<BoundedSumWithError<double>>(
-      DefaultEpsilon(), sequence->RangeMin(), sequence->RangeMax(),
-      absl::make_unique<test_utils::SeededLaplaceMechanism::Builder>());
+  auto mechanism_builder =
+      std::make_unique<test_utils::SeededLaplaceMechanism::Builder>();
+  auto algorithm = std::make_unique<BoundedSumWithError<double>>(
+      std::log(3), 0, sequence->RangeMin(), sequence->RangeMax(),
+      std::move(mechanism_builder));
   StochasticTester<double> tester(std::move(algorithm), std::move(sequence));
   EXPECT_TRUE(tester.Run());
 }
 
 // Test an algorithm that throws error deterministically.
 TEST(StochasticTesterTest, ErrorStatusWithoutDP) {
+  const double epsilon = std::log(3);
   auto sequence = absl::make_unique<HaltonSequence<int64_t>>(
       DefaultDatasetSize(), /*sorted_only=*/true, DefaultDataScale(),
       DefaultDataOffset());
-  auto algorithm = absl::make_unique<CountNoDpError<int64_t>>(DefaultEpsilon());
+  auto mechanism = LaplaceMechanism::Builder().SetEpsilon(epsilon).Build();
+  ASSERT_TRUE(mechanism.ok());
+  auto algorithm =
+      absl::make_unique<CountNoDpError<int64_t>>(epsilon, std::move(*mechanism));
   StochasticTester<int64_t> tester(std::move(algorithm), std::move(sequence));
   EXPECT_FALSE(tester.Run());
 }
