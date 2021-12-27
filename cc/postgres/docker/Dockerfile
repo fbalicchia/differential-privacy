@@ -1,8 +1,7 @@
-FROM postgres:11 AS build
+FROM postgres:12 AS build
 
 ENV PROTOC_VERSION=1.3
 
-ENV DF_COMMIT_ID=20f80aaf40b6d71c73c3b21e2ed77cbe54dbc1fc
 
 # Install the packages which will be required to get everything to compile
 RUN apt-get update \
@@ -27,25 +26,21 @@ RUN echo "deb [arch=amd64] http://storage.googleapis.com/bazel-apt stable jdk1.8
 
 
 RUN apt-get update \
-  && apt-get install -y bazel \
+  && apt-get install -y bazel=4.1.0 \
   && rm -rf /var/lib/apt/lists/*
 
 
 ##Download differential privacy module
 
 
-RUN git clone https://github.com/google/differential-privacy.git -b master --single-branch /tmp/differential-privacy \
-    && cd /tmp/differential-privacy \
-    && git checkout $DF_COMMIT_ID \
+RUN git clone https://github.com/fbalicchia/differential-privacy.git -b image-df-postgresql --single-branch /tmp/differential-privacy \
     && cd /tmp/differential-privacy/cc \
     && bazel build postgres/anon_func.so 
 
 
-#COPY ./differential-privacy /tmp/differential-privacy
-#RUN cd /tmp/differential-privacy/cc;bazel build postgres/anon_func.so
 
 
-FROM postgres:11
+FROM postgres:12
 
 RUN apt-get update \
     && apt-get install -f -y --no-install-recommends \
