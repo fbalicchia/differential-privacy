@@ -10,9 +10,15 @@ and run
 docker run google/differential-privacy-postgres -e POSTGRES_PASSWORD=password
 ```
 
+* In PostgreSQL, load the extension by calling
+
+    ```
+    CREATE EXTENSION anon_func;
+    ```
+
 # How to use this image
 
-This image is used in the same manner as the [`postgres:11.0`](https://hub.docker.com/_/postgres/) image, though the `/usr/share/postgresql/postgresql.conf.sample` file configures the logical decoding feature:
+This image is used in the same manner as the [`postgres:12.0`](https://hub.docker.com/_/postgres/) image, though the `/usr/share/postgresql/postgresql.conf.sample` file configures the logical decoding feature:
 
 ```
 # LOGGING
